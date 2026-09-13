@@ -280,6 +280,10 @@ the hud variables.
 
 void DLLEXPORT HUD_Init( void )
 {
+	// Re-install crash handler after engine has finished initialization
+	// (engine may override our signal handlers during its own init)
+	CrashHandler_Install();
+
 	LoadMenuInterface();
 	InitInput();
 	gHUD.Init();

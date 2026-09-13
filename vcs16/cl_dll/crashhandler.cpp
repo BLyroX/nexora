@@ -14,8 +14,12 @@
 #include <sys/mman.h>
 #include <sys/system_properties.h>
 #include <time.h>
+#include <android/log.h>
 
 #include "crashhandler.h"
+
+#define CRASHLOG_TAG "YAPBCrash"
+#define CRASHLOG(...) __android_log_print(ANDROID_LOG_ERROR, CRASHLOG_TAG, __VA_ARGS__)
 
 static char s_crashLogPath[256] = {0};
 static volatile sig_atomic_t s_inCrash = 0;
@@ -538,6 +542,7 @@ static void resolveAddressEnhanced(char *buf, size_t bufSize, void *addr, int lo
 // ─── crash handler ──────────────────────────────────────────────────────────
 
 static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
+	CRASHLOG("CRASH HANDLER FIRED: sig=%d", sig);
 	if (s_inCrash) _exit(1);
 	s_inCrash = 1;
 
@@ -550,7 +555,11 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 	}
 
 	int fd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) _exit(1);
+	if (fd < 0) {
+		CRASHLOG("FAILED to open %s: errno=%d", logPath, errno);
+		_exit(1);
+	}
+	CRASHLOG("Writing crash log to %s", logPath);
 
 	// Header
 	writeStr(fd, "\n=== CS16Client CRASH ===\n");
@@ -783,16 +792,22 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 static struct sigaction s_oldHandlers[32];
 
 void CrashHandler_Init(void) {
-	// Set up an alternate signal stack so the handler has its own stack
-	// even when the crashed thread's stack is corrupted or overflowed.
+	CRASHLOG("CrashHandler_Init called");
+
+	// Set up an alternate signal stack
 	static char s_signalStack[SIGSTKSZ];
 	stack_t ss;
 	memset(&ss, 0, sizeof(ss));
 	ss.ss_sp = s_signalStack;
 	ss.ss_size = SIGSTKSZ;
 	ss.ss_flags = 0;
-	sigaltstack(&ss, NULL);
+	int ss_ret = sigaltstack(&ss, NULL);
+	CRASHLOG("sigaltstack=%d SIGSTKSZ=%d", ss_ret, SIGSTKSZ);
 
+	CrashHandler_Install();
+}
+
+void CrashHandler_Install(void) {
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_sigaction = crashHandler;
@@ -803,6 +818,7 @@ void CrashHandler_Init(void) {
 	for (int i = 0; i < 5; i++) {
 		sigaction(sigs[i], &sa, &s_oldHandlers[sigs[i]]);
 	}
+	CRASHLOG("Signal handlers installed: SIGILL SIGSEGV SIGBUS SIGABRT SIGFPE");
 }
 
 void CrashHandler_SetGameDir(const char *gamedir) {
