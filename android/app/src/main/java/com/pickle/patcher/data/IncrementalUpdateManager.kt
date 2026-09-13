@@ -5,176 +5,138 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * Manages incremental updates: fetches a manifest.json from GitHub Releases,
- * compares file hashes against a local libs/ cache, and downloads only changed
- * .so files. This avoids re-downloading the full 28MB bundle on every update.
+ * Manages incremental updates using GitHub Releases API.
+ * Compares file sizes between release assets and local libs/ directory.
+ * No manifest.json needed — just size comparison.
  */
 object IncrementalUpdateManager {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val json = Json { ignoreUnknownKeys = true }
 
     @Serializable
-    data class Manifest(
-        val version: String = "",
-        val game: String = "cs16client",
-        val abi: String = "arm64-v8a",
-        val files: List<ManifestEntry> = emptyList(),
+    data class ReleaseAsset(
+        val name: String = "",
+        val size: Long = 0,
+        val browser_download_url: String = "",
     )
 
     @Serializable
-    data class ManifestEntry(
-        val name: String = "",
-        val asset: String = "",
-        val path: String = "",
-        val target: String = "",
-        val sha256: String = "",
-        val size: Long = 0,
-        val required: Boolean = true,
-        val description: String = "",
+    data class ReleaseInfo(
+        val tag_name: String = "",
+        val assets: List<ReleaseAsset> = emptyList(),
+    )
+
+    data class AssetInfo(
+        val assetName: String,
+        val cleanName: String,
+        val size: Long,
+        val downloadUrl: String,
     )
 
     data class UpdateResult(
-        val changed: List<ManifestEntry>,
-        val unchanged: List<ManifestEntry>,
+        val toDownload: List<AssetInfo>,
+        val upToDate: List<AssetInfo>,
         val totalBytes: Long,
     )
 
+    private const val REPO = "berkchy/cs16-meta-patcher"
+
     /**
-     * Fetch the manifest.json from a release asset.
-     * arm64-v8a uses manifest.json, armeabi-v7a uses manifest-v7a.json.
+     * Fetch release assets from GitHub API and filter for current ABI.
+     * Returns AssetInfo with clean names (stripped ABI prefix).
      */
-    suspend fun fetchManifest(repo: String, tag: String, abi: String): Manifest? {
-        val manifestName = if (abi == "armeabi-v7a") "manifest-v7a.json" else "manifest.json"
-        val url = "https://github.com/$repo/releases/download/$tag/$manifestName"
+    suspend fun fetchReleaseAssets(tag: String, abi: String): List<AssetInfo> {
+        val url = "https://api.github.com/repos/$REPO/releases/tags/$tag"
         return try {
             val req = Request.Builder()
                 .url(url)
                 .header("User-Agent", "cs16-amxx-patcher")
-                .header("Accept", "application/octet-stream")
+                .header("Accept", "application/vnd.github+json")
                 .build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val body = resp.body?.string() ?: return null
-                json.decodeFromString<Manifest>(body)
+                if (!resp.isSuccessful) return emptyList()
+                val body = resp.body?.string() ?: return emptyList()
+                val release = json.decodeFromString<ReleaseInfo>(body)
+                release.assets
+                    .filter { it.name.startsWith("${abi}__") && it.name.endsWith(".so") }
+                    .map { asset ->
+                        val cleanName = asset.name.removePrefix("${abi}__")
+                        AssetInfo(
+                            assetName = asset.name,
+                            cleanName = cleanName,
+                            size = asset.size,
+                            downloadUrl = asset.browser_download_url,
+                        )
+                    }
             }
         } catch (_: Throwable) {
-            null
+            emptyList()
         }
     }
 
     /**
-     * Load the local manifest from libs/ directory.
+     * Compare release assets against local files on disk.
+     * Uses file size as the comparison metric.
      */
-    fun loadLocalManifest(libsDir: File, abi: String): Manifest? {
-        val manifestFile = File(libsDir, "$abi/manifest.json")
-        if (!manifestFile.exists()) return null
-        return try {
-            json.decodeFromString<Manifest>(manifestFile.readText())
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    /**
-     * Save the local manifest to libs/ directory.
-     */
-    fun saveLocalManifest(libsDir: File, abi: String, manifest: Manifest) {
-        val manifestFile = File(libsDir, "$abi/manifest.json")
-        manifestFile.parentFile?.mkdirs()
-        manifestFile.writeText(json.encodeToString(Manifest.serializer(), manifest))
-    }
-
-    /**
-     * Compare remote manifest against local manifest + disk to find files that need downloading.
-     * Checks both the manifest entry AND the actual file on disk.
-     * This way, interrupted downloads don't re-download already-fetched files.
-     */
-    fun diff(remote: Manifest, local: Manifest?, libsDir: File, abi: String): UpdateResult {
-        val localMap = local?.files?.associateBy { it.name }
+    fun diff(releaseAssets: List<AssetInfo>, libsDir: File, abi: String): UpdateResult {
         val targetDir = File(libsDir, abi)
-        val changed = mutableListOf<ManifestEntry>()
-        val unchanged = mutableListOf<ManifestEntry>()
+        val toDownload = mutableListOf<AssetInfo>()
+        val upToDate = mutableListOf<AssetInfo>()
 
-        for (entry in remote.files) {
-            // Check 1: local manifest says this file is unchanged
-            val localEntry = localMap?.get(entry.name)
-            if (localEntry != null && localEntry.sha256 == entry.sha256) {
-                // Manifest matches — but also verify the file actually exists on disk
-                val fileOnDisk = File(targetDir, entry.name)
-                if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
-                    unchanged.add(entry)
-                    continue
-                }
+        for (asset in releaseAssets) {
+            val fileOnDisk = File(targetDir, asset.cleanName)
+            if (fileOnDisk.exists() && fileOnDisk.length() == asset.size) {
+                upToDate.add(asset)
+            } else {
+                toDownload.add(asset)
             }
-
-            // Check 2: file exists on disk with correct hash (even if manifest was stale)
-            val fileOnDisk = File(targetDir, entry.name)
-            if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
-                val diskHash = sha256File(fileOnDisk)
-                if (diskHash == entry.sha256) {
-                    unchanged.add(entry)
-                    continue
-                }
-            }
-
-            // File needs downloading
-            changed.add(entry)
         }
 
-        val totalBytes = changed.sumOf { it.size }
-        return UpdateResult(changed = changed, unchanged = unchanged, totalBytes = totalBytes)
+        val totalBytes = toDownload.sumOf { it.size }
+        return UpdateResult(toDownload = toDownload, upToDate = upToDate, totalBytes = totalBytes)
     }
 
     /**
-     * Download only changed files from the release.
-     * Each file is downloaded as: <repo>/releases/download/<tag>/<asset-name>
-     * (uploaded as individual release assets by gen-manifest.py)
+     * Download only files that need updating.
+     * Saves with clean name (no ABI prefix) — files are in ABI subdirectory.
      */
     suspend fun downloadChanged(
-        repo: String,
-        tag: String,
-        changed: List<ManifestEntry>,
+        toDownload: List<AssetInfo>,
         libsDir: File,
         abi: String,
-        onFileStart: (index: Int, entry: ManifestEntry) -> Unit = { _, _ -> },
-        onFileProgress: (index: Int, entry: ManifestEntry, fileProgress: Float) -> Unit = { _, _, _ -> },
+        onFileStart: (index: Int, asset: AssetInfo) -> Unit = { _, _ -> },
+        onFileProgress: (index: Int, asset: AssetInfo, progress: Float) -> Unit = { _, _, _ -> },
         onProgress: (downloaded: Int, total: Int, bytesWritten: Long) -> Unit = { _, _, _ -> },
     ) {
         val targetDir = File(libsDir, abi)
         targetDir.mkdirs()
 
-        for ((index, entry) in changed.withIndex()) {
-            onFileStart(index, entry)
+        for ((index, asset) in toDownload.withIndex()) {
+            onFileStart(index, asset)
 
-            // Download using ABI-prefixed asset name (for GitHub Release uniqueness)
-            val assetName = entry.asset.ifBlank { entry.name }
-            val url = "https://github.com/$repo/releases/download/$tag/$assetName"
-
-            // Save with clean name (no ABI prefix) — files are already in ABI subdirectory
-            val destFile = File(targetDir, entry.name)
+            val destFile = File(targetDir, asset.cleanName)
             destFile.parentFile?.mkdirs()
 
             val req = Request.Builder()
-                .url(url)
+                .url(asset.downloadUrl)
                 .header("User-Agent", "cs16-amxx-patcher")
                 .header("Accept", "application/octet-stream")
                 .build()
 
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    throw IllegalStateException("Download failed for $assetName: ${resp.code}")
+                    throw IllegalStateException("Download failed for ${asset.assetName}: ${resp.code}")
                 }
-                val body = resp.body ?: throw IllegalStateException("Empty body for $assetName")
-                val expectedSize = entry.size.takeIf { it > 0 }
+                val body = resp.body ?: throw IllegalStateException("Empty body for ${asset.assetName}")
+                val expectedSize = asset.size.takeIf { it > 0 }
                     ?: body.contentLength().takeIf { it > 0 }
                     ?: 0L
                 var written = 0L
@@ -187,54 +149,48 @@ object IncrementalUpdateManager {
                             output.write(buffer, 0, n)
                             written += n
                             if (expectedSize > 0) {
-                                onFileProgress(index, entry, (written.toFloat() / expectedSize).coerceIn(0f, 1f))
+                                onFileProgress(index, asset, (written.toFloat() / expectedSize).coerceIn(0f, 1f))
                             }
                         }
                     }
                 }
                 destFile.setExecutable(true)
-
-                // Verify SHA-256
-                val actualHash = sha256File(destFile)
-                if (actualHash != entry.sha256) {
-                    destFile.delete()
-                    throw IllegalStateException(
-                        "Hash mismatch for $assetName: expected ${entry.sha256}, got $actualHash"
-                    )
-                }
             }
 
-            onProgress(index + 1, changed.size, changed.take(index + 1).sumOf { it.size })
+            onProgress(index + 1, toDownload.size, toDownload.take(index + 1).sumOf { it.size })
         }
     }
 
     /**
-     * Build a Bundle-compatible in-memory file map from libs/ directory.
-     * This allows the existing ZipRepacker to work without modification —
-     * it receives the same Map<String, ByteArray> it always has.
+     * Load all .so files from libs/<abi>/ for patching.
+     * Returns Map<targetPath, fileBytes> compatible with ZipRepacker.
      */
-    fun loadBundleFiles(libsDir: File, abi: String, manifest: Manifest): Map<String, ByteArray> {
+    fun loadBundleFiles(libsDir: File, abi: String): Map<String, ByteArray> {
         val targetDir = File(libsDir, abi)
+        if (!targetDir.exists()) return emptyMap()
+
+        val suffix = if (abi == "arm64-v8a") "arm64" else "armv7l"
+        val modSuffix = if (abi == "arm64-v8a") "amd64" else "arm"
+
         val files = HashMap<String, ByteArray>()
-        for (entry in manifest.files) {
-            val file = File(targetDir, entry.name)
-            if (file.exists() && file.length() == entry.size) {
-                files[entry.target] = file.readBytes()
+        targetDir.listFiles()?.filter { it.isFile && it.extension == "so" }?.forEach { file ->
+            val name = file.name
+            val targetPath = getTargetPath(name, abi, suffix, modSuffix)
+            if (targetPath != null) {
+                files[targetPath] = file.readBytes()
             }
         }
         return files
     }
 
-    private fun sha256File(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(65536)
-            while (true) {
-                val n = input.read(buffer)
-                if (n < 0) break
-                digest.update(buffer, 0, n)
-            }
+    /**
+     * Map a clean .so filename to its target path in the APK.
+     */
+    private fun getTargetPath(name: String, abi: String, suffix: String, modSuffix: String): String? {
+        return when {
+            name == "libmetamod.so" -> "lib/$abi/libyapb_android_$suffix.so"
+            name.startsWith("lib") && name.endsWith(".so") -> "lib/$abi/$name"
+            else -> null
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 }

@@ -246,15 +246,12 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun useCachedBundle() {
         val abi = _abi.value
-        val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, abi)
-        if (localManifest != null) {
-            val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, localManifest)
-            if (files.isNotEmpty()) {
-                val b = buildBundle(localManifest, files)
-                loadedBundle = b
-                _bundle.value = BundleState.Loaded
-                return
-            }
+        val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi)
+        if (files.isNotEmpty()) {
+            val b = buildBundleFromFiles(files, abi)
+            loadedBundle = b
+            _bundle.value = BundleState.Loaded
+            return
         }
         // Fallback: try legacy cached bundle zip
         val b = bundleProvider.loadCachedBundle()
@@ -277,17 +274,16 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val tagName = rel.name.ifBlank { rel.tag_name }
                 _releaseNote.value = tagName
 
-                val manifest = IncrementalUpdateManager.fetchManifest(repo, tagName, _abi.value)
-                    ?: throw IOException("No manifest.json found for ABI ${_abi.value} in the latest release")
+                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                if (assets.isEmpty()) throw IOException("No .so assets found for ABI ${_abi.value}")
                 _bundle.update { BundleState.Downloading(0.1f, tagName) }
 
-                val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, _abi.value)
-                val diff = IncrementalUpdateManager.diff(manifest, localManifest, libsDir, _abi.value)
+                val diff = IncrementalUpdateManager.diff(assets, libsDir, _abi.value)
 
-                if (diff.changed.isEmpty()) {
-                    val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value, manifest)
+                if (diff.toDownload.isEmpty()) {
+                    val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
                     if (files.isEmpty()) throw IOException("No .so files found in libs/")
-                    val b = buildBundle(manifest, files)
+                    val b = buildBundleFromFiles(files, _abi.value)
                     markBundleTagKnown(rel.tag_name)
                     _bundle.value = BundleState.Loaded
                     loadedBundle = b
@@ -296,40 +292,39 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
 
                 // Download changed files with per-lib progress
                 IncrementalUpdateManager.downloadChanged(
-                    repo, tagName, diff.changed, libsDir, _abi.value,
-                    onFileStart = { index, entry ->
+                    diff.toDownload, libsDir, _abi.value,
+                    onFileStart = { index, asset ->
                         _bundle.update {
                             BundleState.Downloading(
-                                percent = 0.15f + (0.75f * index.toFloat() / diff.changed.size).coerceAtMost(0.75f),
+                                percent = 0.15f + (0.75f * index.toFloat() / diff.toDownload.size).coerceAtMost(0.75f),
                                 tagName = tagName,
-                                currentFile = entry.name,
+                                currentFile = asset.cleanName,
                                 fileIndex = index,
-                                fileTotal = diff.changed.size,
+                                fileTotal = diff.toDownload.size,
                             )
                         }
                     },
-                    onFileProgress = { index, entry, fileProgress ->
-                        val base = 0.15f + (0.75f * index.toFloat() / diff.changed.size).coerceAtMost(0.75f)
-                        val perFileWeight = 0.75f / diff.changed.size
+                    onFileProgress = { index, asset, fileProgress ->
+                        val base = 0.15f + (0.75f * index.toFloat() / diff.toDownload.size).coerceAtMost(0.75f)
+                        val perFileWeight = 0.75f / diff.toDownload.size
                         _bundle.update {
                             BundleState.Downloading(
                                 percent = base + perFileWeight * fileProgress,
                                 tagName = tagName,
-                                currentFile = entry.name,
+                                currentFile = asset.cleanName,
                                 fileIndex = index,
-                                fileTotal = diff.changed.size,
+                                fileTotal = diff.toDownload.size,
                             )
                         }
                     },
                 )
 
-                IncrementalUpdateManager.saveLocalManifest(libsDir, _abi.value, manifest)
-                val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value, manifest)
+                val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
                 if (files.isEmpty()) throw IOException("No .so files found after download")
-                val b = buildBundle(manifest, files)
+                val b = buildBundleFromFiles(files, _abi.value)
                 markBundleTagKnown(rel.tag_name)
                 _bundle.value = BundleState.Ready(
-                    "Updated ${diff.changed.size} files", b.manifest.entries.size, b.manifest.version
+                    "Updated ${diff.toDownload.size} files", b.manifest.entries.size, b.manifest.version
                 )
                 loadedBundle = b
             } catch (t: Throwable) {
@@ -338,22 +333,37 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun buildBundle(manifest: IncrementalUpdateManager.Manifest, files: Map<String, ByteArray>): Bundle {
-        val bundleManifest = com.pickle.patcher.lib.BundleManifest(
-            version = manifest.version,
-            game = manifest.game,
-            abi = manifest.abi,
-            entries = manifest.files.map { entry ->
-                com.pickle.patcher.lib.BundleManifest.BundleEntry(
-                    source = entry.path,
-                    target = entry.target,
-                    method = com.pickle.patcher.lib.BundleManifest.Compression.STORED,
-                    required = entry.required,
-                    description = entry.description,
-                )
-            },
+    private fun buildBundleFromFiles(files: Map<String, ByteArray>, abi: String): Bundle {
+        val suffix = if (abi == "arm64-v8a") "arm64" else "armv7l"
+        val modSuffix = if (abi == "arm64-v8a") "amd64" else "arm"
+
+        val entries = files.keys.map { targetPath ->
+            val name = targetPath.substringAfterLast("/")
+            val desc = when {
+                name == "libamxmodx.so" -> "AMX Mod X core"
+                name == "libmetamod.so" || name.startsWith("libyapb_android_") -> "Metamod HL1"
+                name == "libyapb.so" -> "YaPB bot plugin"
+                name == "libclient_android_$suffix.so" -> "CS16Client client DLL"
+                name == "libmenu_android_$suffix.so" -> "CS16Client main menu"
+                name.contains("_amxx_") -> "AMXX module"
+                else -> "Bundle file"
+            }
+            com.pickle.patcher.lib.BundleManifest.BundleEntry(
+                source = targetPath,
+                target = targetPath,
+                method = com.pickle.patcher.lib.BundleManifest.Compression.STORED,
+                required = true,
+                description = desc,
+            )
+        }
+
+        val manifest = com.pickle.patcher.lib.BundleManifest(
+            version = "live",
+            game = "cs16client",
+            abi = abi,
+            entries = entries,
         )
-        return Bundle(bundleManifest, files)
+        return Bundle(manifest, files)
     }
 
     /**
