@@ -49,7 +49,6 @@ def collect_entries(libdir: str, abi: str) -> list:
         if not os.path.exists(src):
             print(f"WARN: {name} not found, skipping", file=sys.stderr)
             return
-        # Asset name uses ABI prefix to avoid conflicts across ABIs
         asset_name = f"{abi}__{name}"
         entries.append({
             "name": name,
