@@ -80,6 +80,10 @@ endif()
 
 add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
 
+if(ANDROID)
+	target_link_libraries(${CLIENT_LIB} log)
+endif()
+
 set_target_postfix(${CLIENT_LIB})
 
 install(TARGETS ${CLIENT_LIB}
