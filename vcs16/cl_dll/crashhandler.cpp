@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <unwind.h>
 #include <elf.h>
+#include <link.h>
 #include <sys/mman.h>
 #include <sys/system_properties.h>
 #include <time.h>
