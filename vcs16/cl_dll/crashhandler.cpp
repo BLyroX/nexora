@@ -15,6 +15,7 @@
 #include <sys/system_properties.h>
 #include <time.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #include "crashhandler.h"
 
@@ -542,20 +543,21 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 	if (s_inCrash) _exit(1);
 	s_inCrash = 1;
 
-	// Use fallback path if SetGameDir was never called
-	char logPath[256];
+	char paths[2][256];
+	int pathCount = 0;
+
 	if (s_crashLogPath[0]) {
-		safeStrcat(logPath, s_crashLogPath, sizeof(logPath));
-	} else {
-		safeStrcat(logPath, "/sdcard/cs16client/crash.log", sizeof(logPath));
+		safeStrcat(paths[pathCount], s_crashLogPath, sizeof(paths[pathCount]));
+		pathCount++;
 	}
+	safeStrcat(paths[pathCount], "/sdcard/Download/crash.log", sizeof(paths[pathCount]));
+	pathCount++;
 
-	// Append crash info after the init header
-	int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (fd < 0) _exit(1);
+	for (int p = 0; p < pathCount; p++) {
+		int fd = open(paths[p], O_WRONLY | O_CREAT | O_APPEND, 0644);
+		if (fd < 0) continue;
 
-	// Signal
-	writeStr(fd, "\n=== CRASH ===\n");
+		writeStr(fd, "\n=== CRASH ===\n");
 
 	writeStr(fd, "Signal: ");
 	writeStr(fd, getSignalName(sig));
@@ -727,6 +729,8 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 
 	writeStr(fd, "=== END CRASH ===\n");
 	close(fd);
+	} // end for each path
+
 	_exit(1);
 }
 
@@ -735,77 +739,99 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 static struct sigaction s_oldHandlers[32];
 
 static void CrashHandler_WriteHeader(void) {
-	// Use fallback path if SetGameDir was never called
-	char logPath[256];
+	// Try to write to both game dir and guaranteed accessible path
+	char paths[2][256];
+	int pathCount = 0;
+
+	// Game dir path (if SetGameDir was called)
 	if (s_crashLogPath[0]) {
-		safeStrcat(logPath, s_crashLogPath, sizeof(logPath));
-	} else {
-		safeStrcat(logPath, "/sdcard/cs16client/crash.log", sizeof(logPath));
+		safeStrcat(paths[pathCount], s_crashLogPath, sizeof(paths[pathCount]));
+		pathCount++;
 	}
 
-	int fd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) return;
+	// Guaranteed fallback path
+	safeStrcat(paths[pathCount], "/sdcard/Download/crash.log", sizeof(paths[pathCount]));
+	pathCount++;
 
-	writeStr(fd, "=== CS16Client INIT ===\n");
+	for (int p = 0; p < pathCount; p++) {
+		// Ensure parent directory exists
+		char dir[256];
+		dir[0] = '\0';
+		safeStrcat(dir, paths[p], sizeof(dir));
+		// Find last slash to get directory
+		int lastSlash = -1;
+		for (int i = 0; dir[i]; i++) {
+			if (dir[i] == '/') lastSlash = i;
+		}
+		if (lastSlash > 0) {
+			dir[lastSlash] = '\0';
+			mkdir(dir, 0755);
+		}
 
-	// Date/time
-	{
-		time_t now = time(NULL);
-		struct tm tm_buf;
-		localtime_r(&now, &tm_buf);
-		char dt[64];
-		strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
-		writeStr(fd, "Time: "); writeStr(fd, dt); writeStr(fd, "\n");
-	}
+		int fd = open(paths[p], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd < 0) continue;
 
-	// Device info
-	{
-		char prop[256];
-		writeStr(fd, "\n--- Device ---\n");
-		if (__system_property_get("ro.product.brand", prop) > 0) {
-			writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
+		writeStr(fd, "=== CS16Client INIT ===\n");
+
+		// Date/time
+		{
+			time_t now = time(NULL);
+			struct tm tm_buf;
+			localtime_r(&now, &tm_buf);
+			char dt[64];
+			strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
+			writeStr(fd, "Time: "); writeStr(fd, dt); writeStr(fd, "\n");
 		}
-		if (__system_property_get("ro.product.model", prop) > 0) {
-			writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.device", prop) > 0) {
-			writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.board", prop) > 0) {
-			writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.hardware.chipname", prop) > 0) {
-			writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
-		} else if (__system_property_get("ro.hardware", prop) > 0) {
-			writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
-			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-		} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
-			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.build.version.release", prop) > 0) {
-			writeStr(fd, "Android: "); writeStr(fd, prop);
-			if (__system_property_get("ro.build.version.sdk", prop) > 0) {
-				writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
+
+		// Device info
+		{
+			char prop[256];
+			writeStr(fd, "\n--- Device ---\n");
+			if (__system_property_get("ro.product.brand", prop) > 0) {
+				writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
 			}
-			writeStr(fd, "\n");
+			if (__system_property_get("ro.product.model", prop) > 0) {
+				writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.product.device", prop) > 0) {
+				writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.product.board", prop) > 0) {
+				writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.hardware.chipname", prop) > 0) {
+				writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
+			} else if (__system_property_get("ro.hardware", prop) > 0) {
+				writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
+				writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+			} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
+				writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.build.version.release", prop) > 0) {
+				writeStr(fd, "Android: "); writeStr(fd, prop);
+				if (__system_property_get("ro.build.version.sdk", prop) > 0) {
+					writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
+				}
+				writeStr(fd, "\n");
+			}
+			if (__system_property_get("ro.build.display.id", prop) > 0) {
+				writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
+			}
 		}
-		if (__system_property_get("ro.build.display.id", prop) > 0) {
-			writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
+
+		// Versions
+		if (s_engineVersion[0]) {
+			writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
 		}
-	}
+		if (s_patcherVersion[0]) {
+			writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
+		}
 
-	// Versions
-	if (s_engineVersion[0]) {
-		writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
+		writeStr(fd, "\n--- Running (no crash) ---\n");
+		close(fd);
 	}
-	if (s_patcherVersion[0]) {
-		writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
-	}
-
-	writeStr(fd, "\n--- Running (no crash) ---\n");
-	close(fd);
 }
 
 void CrashHandler_Init(void) {
