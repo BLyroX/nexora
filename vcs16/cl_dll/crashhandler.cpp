@@ -15,12 +15,8 @@
 #include <sys/system_properties.h>
 #include <time.h>
 #include <errno.h>
-#include <android/log.h>
 
 #include "crashhandler.h"
-
-#define CRASHLOG_TAG "YAPBCrash"
-#define CRASHLOG(...) __android_log_print(ANDROID_LOG_ERROR, CRASHLOG_TAG, __VA_ARGS__)
 
 static char s_crashLogPath[256] = {0};
 static volatile sig_atomic_t s_inCrash = 0;
@@ -543,7 +539,6 @@ static void resolveAddressEnhanced(char *buf, size_t bufSize, void *addr, int lo
 // ─── crash handler ──────────────────────────────────────────────────────────
 
 static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
-	CRASHLOG("CRASH HANDLER FIRED: sig=%d", sig);
 	if (s_inCrash) _exit(1);
 	s_inCrash = 1;
 
@@ -555,20 +550,26 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 		safeStrcat(logPath, "/sdcard/cs16client/crash.log", sizeof(logPath));
 	}
 
-	int fd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) {
-		CRASHLOG("FAILED to open %s: errno=%d", logPath, errno);
-		_exit(1);
-	}
-	CRASHLOG("Writing crash log to %s", logPath);
-
-	// Header
-	writeStr(fd, "\n=== CS16Client CRASH ===\n");
+	// Append crash info after the init header
+	int fd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd < 0) _exit(1);
 
 	// Signal
+	writeStr(fd, "\n=== CRASH ===\n");
+
 	writeStr(fd, "Signal: ");
 	writeStr(fd, getSignalName(sig));
 	writeStr(fd, "\n");
+
+	// Date/time
+	{
+		time_t now = time(NULL);
+		struct tm tm_buf;
+		localtime_r(&now, &tm_buf);
+		char dt[64];
+		strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
+		writeStr(fd, "Time: "); writeStr(fd, dt); writeStr(fd, "\n");
+	}
 
 	// Fault address
 	if (info && info->si_addr) {
@@ -591,65 +592,6 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 		safeStrcat(line, num, sizeof(line));
 		safeStrcat(line, "\n", sizeof(line));
 		writeStr(fd, line);
-	}
-
-	// Date/time
-	{
-		time_t now = time(NULL);
-		struct tm tm_buf;
-		localtime_r(&now, &tm_buf);
-		char dt[64];
-		strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
-		writeStr(fd, "Time: ");
-		writeStr(fd, dt);
-		writeStr(fd, "\n");
-	}
-
-	// Device info via system properties
-	{
-		char prop[256];
-		writeStr(fd, "\n--- Device ---\n");
-
-		if (__system_property_get("ro.product.brand", prop) > 0) {
-			writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.model", prop) > 0) {
-			writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.device", prop) > 0) {
-			writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.board", prop) > 0) {
-			writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.hardware.chipname", prop) > 0) {
-			writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
-		} else if (__system_property_get("ro.hardware", prop) > 0) {
-			writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
-			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-		} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
-			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.build.version.release", prop) > 0) {
-			writeStr(fd, "Android: "); writeStr(fd, prop);
-			if (__system_property_get("ro.build.version.sdk", prop) > 0) {
-				writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
-			}
-			writeStr(fd, "\n");
-		}
-		if (__system_property_get("ro.build.display.id", prop) > 0) {
-			writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
-		}
-	}
-
-	// Engine + Patcher version
-	if (s_engineVersion[0]) {
-		writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
-	}
-	if (s_patcherVersion[0]) {
-		writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
 	}
 
 	// Registers + extract key values
@@ -793,8 +735,6 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 static struct sigaction s_oldHandlers[32];
 
 void CrashHandler_Init(void) {
-	CRASHLOG("CrashHandler_Init called");
-
 	// Set up an alternate signal stack
 	static char s_signalStack[SIGSTKSZ];
 	stack_t ss;
@@ -802,8 +742,7 @@ void CrashHandler_Init(void) {
 	ss.ss_sp = s_signalStack;
 	ss.ss_size = SIGSTKSZ;
 	ss.ss_flags = 0;
-	int ss_ret = sigaltstack(&ss, NULL);
-	CRASHLOG("sigaltstack=%d SIGSTKSZ=%d", ss_ret, SIGSTKSZ);
+	sigaltstack(&ss, NULL);
 
 	CrashHandler_Install();
 }
@@ -819,7 +758,9 @@ void CrashHandler_Install(void) {
 	for (int i = 0; i < 5; i++) {
 		sigaction(sigs[i], &sa, &s_oldHandlers[sigs[i]]);
 	}
-	CRASHLOG("Signal handlers installed: SIGILL SIGSEGV SIGBUS SIGABRT SIGFPE");
+
+	// Write init header to crash.log so we know handler is active
+	CrashHandler_WriteHeader();
 }
 
 void CrashHandler_SetGameDir(const char *gamedir) {
@@ -840,6 +781,80 @@ void CrashHandler_SetEngineVersion(const char *ver) {
 void CrashHandler_SetPatcherVersion(const char *ver) {
 	s_patcherVersion[0] = '\0';
 	if (ver && ver[0]) safeStrcat(s_patcherVersion, ver, sizeof(s_patcherVersion));
+}
+
+static void CrashHandler_WriteHeader(void) {
+	// Use fallback path if SetGameDir was never called
+	char logPath[256];
+	if (s_crashLogPath[0]) {
+		safeStrcat(logPath, s_crashLogPath, sizeof(logPath));
+	} else {
+		safeStrcat(logPath, "/sdcard/cs16client/crash.log", sizeof(logPath));
+	}
+
+	int fd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) return;
+
+	writeStr(fd, "=== CS16Client INIT ===\n");
+
+	// Date/time
+	{
+		time_t now = time(NULL);
+		struct tm tm_buf;
+		localtime_r(&now, &tm_buf);
+		char dt[64];
+		strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
+		writeStr(fd, "Time: "); writeStr(fd, dt); writeStr(fd, "\n");
+	}
+
+	// Device info
+	{
+		char prop[256];
+		writeStr(fd, "\n--- Device ---\n");
+		if (__system_property_get("ro.product.brand", prop) > 0) {
+			writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.model", prop) > 0) {
+			writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.device", prop) > 0) {
+			writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.board", prop) > 0) {
+			writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.hardware.chipname", prop) > 0) {
+			writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
+		} else if (__system_property_get("ro.hardware", prop) > 0) {
+			writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
+			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+		} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
+			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.build.version.release", prop) > 0) {
+			writeStr(fd, "Android: "); writeStr(fd, prop);
+			if (__system_property_get("ro.build.version.sdk", prop) > 0) {
+				writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
+			}
+			writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.build.display.id", prop) > 0) {
+			writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+	}
+
+	// Versions
+	if (s_engineVersion[0]) {
+		writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
+	}
+	if (s_patcherVersion[0]) {
+		writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
+	}
+
+	writeStr(fd, "\n--- Running (no crash) ---\n");
+	close(fd);
 }
 
 #endif // __ANDROID__
