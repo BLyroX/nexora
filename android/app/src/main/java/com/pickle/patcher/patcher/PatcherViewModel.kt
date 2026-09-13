@@ -185,6 +185,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     val repo = "berkchy/cs16-meta-patcher"
 
     private val workDir = File(app.getExternalFilesDir(null) ?: app.cacheDir, "patcher")
+    private val libsDir = File(app.getExternalFilesDir(null) ?: app.cacheDir, "libs")
 
     /**
      * Loads the bundled signing key. Prefers the PEM pair (PKCS#8 key + X.509 cert)
@@ -244,7 +245,6 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun useCachedBundle() {
-        val libsDir = File(getApplication<Application>().filesDir, "libs")
         val abi = _abi.value
         val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, abi)
         if (localManifest != null) {
@@ -281,7 +281,6 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     ?: throw IOException("No manifest.json found for ABI ${_abi.value} in the latest release")
                 _bundle.update { BundleState.Downloading(0.1f, tagName) }
 
-                val libsDir = File(getApplication<Application>().filesDir, "libs")
                 val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, _abi.value)
                 val diff = IncrementalUpdateManager.diff(manifest, localManifest)
 
