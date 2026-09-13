@@ -99,19 +99,17 @@ object IncrementalUpdateManager {
      * This way, interrupted downloads don't re-download already-fetched files.
      */
     fun diff(remote: Manifest, local: Manifest?, libsDir: File, abi: String): UpdateResult {
-        val localMap = local?.files?.associateBy { it.asset.ifBlank { it.name } }
+        val localMap = local?.files?.associateBy { it.name }
         val targetDir = File(libsDir, abi)
         val changed = mutableListOf<ManifestEntry>()
         val unchanged = mutableListOf<ManifestEntry>()
 
         for (entry in remote.files) {
-            val key = entry.asset.ifBlank { entry.name }
-
             // Check 1: local manifest says this file is unchanged
-            val localEntry = localMap?.get(key)
+            val localEntry = localMap?.get(entry.name)
             if (localEntry != null && localEntry.sha256 == entry.sha256) {
                 // Manifest matches — but also verify the file actually exists on disk
-                val fileOnDisk = File(targetDir, key)
+                val fileOnDisk = File(targetDir, entry.name)
                 if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
                     unchanged.add(entry)
                     continue
@@ -119,7 +117,7 @@ object IncrementalUpdateManager {
             }
 
             // Check 2: file exists on disk with correct hash (even if manifest was stale)
-            val fileOnDisk = File(targetDir, key)
+            val fileOnDisk = File(targetDir, entry.name)
             if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
                 val diskHash = sha256File(fileOnDisk)
                 if (diskHash == entry.sha256) {
@@ -157,11 +155,12 @@ object IncrementalUpdateManager {
         for ((index, entry) in changed.withIndex()) {
             onFileStart(index, entry)
 
-            // Download using ABI-prefixed asset name
+            // Download using ABI-prefixed asset name (for GitHub Release uniqueness)
             val assetName = entry.asset.ifBlank { entry.name }
             val url = "https://github.com/$repo/releases/download/$tag/$assetName"
 
-            val destFile = File(targetDir, assetName)
+            // Save with clean name (no ABI prefix) — files are already in ABI subdirectory
+            val destFile = File(targetDir, entry.name)
             destFile.parentFile?.mkdirs()
 
             val req = Request.Builder()
@@ -218,9 +217,8 @@ object IncrementalUpdateManager {
         val targetDir = File(libsDir, abi)
         val files = HashMap<String, ByteArray>()
         for (entry in manifest.files) {
-            val assetName = entry.asset.ifBlank { entry.name }
-            val file = File(targetDir, assetName)
-            if (file.exists()) {
+            val file = File(targetDir, entry.name)
+            if (file.exists() && file.length() == entry.size) {
                 files[entry.target] = file.readBytes()
             }
         }
