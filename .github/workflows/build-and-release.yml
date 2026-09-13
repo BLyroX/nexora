@@ -102,6 +102,7 @@ jobs:
       - name: Package release bundles
         shell: bash
         run: |
+          # Legacy bundle zips (kept for backward compatibility)
           RELEASE_VERSION="$BUNDLE_VERSION" python3 ./android/ci/gen-bundle.py \
             arm64-v8a \
             "$GITHUB_WORKSPACE/build-out/lib/arm64-v8a" \
@@ -117,6 +118,27 @@ jobs:
           else
             echo "::warning::No amxmodx core for armeabi-v7a — v7a bundle skipped"
           fi
+
+          # Incremental update: individual .so files + manifest.json
+          RELEASE_VERSION="$BUNDLE_VERSION" python3 ./android/ci/gen-manifest.py \
+            arm64-v8a \
+            "$GITHUB_WORKSPACE/build-out/lib/arm64-v8a" \
+            "$GITHUB_WORKSPACE/incremental" \
+            --plugins-dir "$GITHUB_WORKSPACE/build-out/plugins"
+          # Rename manifest for arm64 (default ABI keeps manifest.json name)
+          mv "$GITHUB_WORKSPACE/incremental/manifest.json" "$GITHUB_WORKSPACE/manifest.json"
+
+          if [ ! -f "$GITHUB_WORKSPACE/v7a-missing" ] && \
+              [ -f "$GITHUB_WORKSPACE/build-out/lib/armeabi-v7a/libamxmodx.so" ]; then
+            RELEASE_VERSION="$BUNDLE_VERSION" python3 ./android/ci/gen-manifest.py \
+              armeabi-v7a \
+              "$GITHUB_WORKSPACE/build-out/lib/armeabi-v7a" \
+              "$GITHUB_WORKSPACE/incremental-v7a"
+            # Rename manifest for v7a to avoid conflict
+            mv "$GITHUB_WORKSPACE/incremental-v7a/manifest.json" "$GITHUB_WORKSPACE/manifest-v7a.json"
+          fi
+
+          # Addons zip
           cd "$GITHUB_WORKSPACE"
           zip -r amxx-addons.zip addons/ -x '*.git*'
 
@@ -206,6 +228,10 @@ jobs:
             amxx-bundle-armeabi-v7a.zip
             amxx-plugins.zip
             amxx-addons.zip
+            manifest.json
+            manifest-v7a.json
+            incremental/arm64-v8a/*.so
+            incremental-v7a/armeabi-v7a/*.so
             ${{ steps.build_type.outputs.needs_apk == 'true' && 'android/app/build/outputs/apk/release/*.apk' || '' }}
           generate_release_notes: true
           fail_on_unmatched_files: false

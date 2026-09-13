@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.pickle.patcher.CrashLog
 import com.pickle.patcher.R
 import com.pickle.patcher.data.BundleProvider
+import com.pickle.patcher.data.IncrementalUpdateManager
 import com.pickle.patcher.data.ReleaseRepository
 import com.pickle.patcher.lib.ApkPatcher
 import com.pickle.patcher.lib.Bundle
@@ -247,6 +248,15 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val rel = ReleaseRepository.latest(repo)
                 val tagName = rel.name.ifBlank { rel.tag_name }
                 _releaseNote.value = tagName
+
+                // Try incremental update first (individual .so files + manifest.json)
+                val incrementalSuccess = tryIncrementalUpdate(tagName, _abi.value)
+                if (incrementalSuccess) {
+                    markBundleTagKnown(rel.tag_name)
+                    return@launch
+                }
+
+                // Fall back to legacy bundle zip
                 val asset = rel.bundleAsset(_abi.value)
                     ?: throw IOException("No bundle found for ABI ${_abi.value} in the latest release")
                 _bundle.update {
@@ -265,6 +275,75 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 _bundle.value = BundleState.DownloadError(t.message ?: "Unknown error")
             }
         }
+    }
+
+    /**
+     * Attempt incremental update: fetch manifest.json, compare hashes, download only changed .so files.
+     * Returns true if incremental update succeeded, false if we should fall back to legacy bundle zip.
+     */
+    private suspend fun tryIncrementalUpdate(tag: String, abi: String): Boolean {
+        val manifest = IncrementalUpdateManager.fetchManifest(repo, tag, abi) ?: return false
+        _bundle.update { BundleState.Downloading(0.1f, tag) }
+
+        val libsDir = File(getApplication<Application>().filesDir, "libs")
+        val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, abi)
+        val diff = IncrementalUpdateManager.diff(manifest, localManifest)
+
+        if (diff.changed.isEmpty()) {
+            // All files up to date — just load from cache
+            val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, manifest)
+            if (files.isEmpty()) return false
+            val bundleManifest = com.pickle.patcher.lib.BundleManifest(
+                version = manifest.version,
+                game = manifest.game,
+                abi = manifest.abi,
+                entries = manifest.files.map { entry ->
+                    com.pickle.patcher.lib.BundleManifest.BundleEntry(
+                        source = entry.path,
+                        target = entry.target,
+                        method = com.pickle.patcher.lib.BundleManifest.Compression.STORED,
+                        required = entry.required,
+                        description = entry.description,
+                    )
+                },
+            )
+            val b = Bundle(bundleManifest, files)
+            _bundle.value = BundleState.Ready("Cached (${diff.unchanged.size} files)", b.manifest.entries.size, b.manifest.version)
+            loadedBundle = b
+            return true
+        }
+
+        // Download changed files with progress
+        _bundle.update { BundleState.Downloading(0.15f, tag) }
+        IncrementalUpdateManager.downloadChanged(repo, tag, diff.changed, libsDir, abi)
+        { downloaded, total, bytesWritten ->
+            val progress = 0.15f + (0.75f * downloaded.toFloat() / total).coerceAtMost(0.75f)
+            _bundle.value = BundleState.Downloading(progress, tag)
+        }
+
+        // Save updated local manifest
+        IncrementalUpdateManager.saveLocalManifest(libsDir, abi, manifest)
+
+        // Load all files from libs/ and build Bundle
+        val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, manifest)
+        if (files.isEmpty()) return false
+        val bundleManifest = com.pickle.patcher.lib.BundleManifest(
+            version = manifest.version,
+            game = manifest.game,
+            abi = manifest.abi,
+            entries = manifest.files.map { entry ->
+                com.pickle.patcher.lib.BundleManifest.BundleEntry(
+                    source = entry.path,
+                    target = entry.target,
+                    method = com.pickle.patcher.lib.BundleManifest.Compression.STORED,
+                    required = entry.required,
+                    description = entry.description,
+                )
+            },
+        )
+        val b = Bundle(bundleManifest, files)
+        applyBundle("Incremental ($tag, ${diff.changed.size} updated)", b)
+        return true
     }
 
     private fun applyBundle(label: String, b: Bundle) {
