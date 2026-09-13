@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/system_properties.h>
 #include <time.h>
+#include <errno.h>
 #include <android/log.h>
 
 #include "crashhandler.h"
