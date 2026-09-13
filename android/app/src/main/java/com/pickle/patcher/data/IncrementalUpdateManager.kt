@@ -176,10 +176,12 @@ object IncrementalUpdateManager {
         targetDir.listFiles()?.filter { it.isFile && it.extension == "so" }?.forEach { file ->
             val name = file.name
             val targetPath = getTargetPath(name, abi, suffix, modSuffix)
+            android.util.Log.d("CS16Patcher", "loadBundle: $name -> $targetPath (${file.length()} bytes)")
             if (targetPath != null) {
                 files[targetPath] = file.readBytes()
             }
         }
+        android.util.Log.d("CS16Patcher", "loadBundle: ${files.size} files loaded, keys=${files.keys}")
         return files
     }
 
