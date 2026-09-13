@@ -141,8 +141,6 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
-        // Restore persisted compiler folders so the user does not have to
-        // re-pick them on every app start.
         val savedScripts = compilerPrefs.getString("script_root", null)
         if (!savedScripts.isNullOrEmpty() && File(savedScripts).isDirectory) {
             _scriptRoot.value = savedScripts
@@ -152,6 +150,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         if (!savedOutput.isNullOrEmpty() && File(savedOutput).isDirectory) {
             _outputRoot.value = savedOutput
         }
+        scanLibs()
     }
 
     private val _compile = MutableStateFlow<CompileState>(CompileState.Idle)
@@ -283,22 +282,34 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     fun scanLibs() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val rel = ReleaseRepository.latest(repo)
-                val tagName = rel.name.ifBlank { rel.tag_name }
-                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
                 val targetDir = File(libsDir, _abi.value)
-                val result = mutableListOf<LibInfo>()
-                for (asset in assets) {
-                    val fileOnDisk = File(targetDir, asset.cleanName)
-                    val localSize = if (fileOnDisk.exists()) fileOnDisk.length() else 0L
-                    result.add(LibInfo(
-                        name = asset.cleanName,
-                        localSize = localSize,
-                        releaseSize = asset.size,
-                        upToDate = localSize == asset.size,
-                    ))
+                val localFiles = if (targetDir.isDirectory) {
+                    targetDir.listFiles()
+                        ?.filter { it.name.endsWith(".so") }
+                        ?.map { it.name to it.length() }
+                        ?.toMap()
+                        ?: emptyMap()
+                } else emptyMap()
+
+                var releaseMap: Map<String, Long> = emptyMap()
+                try {
+                    val rel = ReleaseRepository.latest(repo)
+                    val tagName = rel.name.ifBlank { rel.tag_name }
+                    val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                    releaseMap = assets.associate { it.cleanName to it.size }
+                } catch (_: Throwable) { }
+
+                val allNames = (localFiles.keys + releaseMap.keys).distinct().sorted()
+                _libs.value = allNames.map { name ->
+                    val local = localFiles[name] ?: 0L
+                    val release = releaseMap[name] ?: 0L
+                    LibInfo(
+                        name = name,
+                        localSize = local,
+                        releaseSize = release,
+                        upToDate = release > 0 && local == release,
+                    )
                 }
-                _libs.value = result
             } catch (_: Throwable) {
                 _libs.value = emptyList()
             }

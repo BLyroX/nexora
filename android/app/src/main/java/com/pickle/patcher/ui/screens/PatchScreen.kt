@@ -305,7 +305,7 @@ private fun LibListCard(vm: PatcherViewModel) {
     AppCard {
         if (libs.isEmpty()) {
             Text(
-                "No libs found. Load a bundle first.",
+                "No .so files found in libs directory.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Gray40,
             )
