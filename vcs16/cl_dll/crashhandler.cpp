@@ -734,55 +734,6 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 
 static struct sigaction s_oldHandlers[32];
 
-void CrashHandler_Init(void) {
-	// Set up an alternate signal stack
-	static char s_signalStack[SIGSTKSZ];
-	stack_t ss;
-	memset(&ss, 0, sizeof(ss));
-	ss.ss_sp = s_signalStack;
-	ss.ss_size = SIGSTKSZ;
-	ss.ss_flags = 0;
-	sigaltstack(&ss, NULL);
-
-	CrashHandler_Install();
-}
-
-void CrashHandler_Install(void) {
-	struct sigaction sa;
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_sigaction = crashHandler;
-	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-	sigemptyset(&sa.sa_mask);
-
-	int sigs[] = { SIGILL, SIGSEGV, SIGBUS, SIGABRT, SIGFPE };
-	for (int i = 0; i < 5; i++) {
-		sigaction(sigs[i], &sa, &s_oldHandlers[sigs[i]]);
-	}
-
-	// Write init header to crash.log so we know handler is active
-	CrashHandler_WriteHeader();
-}
-
-void CrashHandler_SetGameDir(const char *gamedir) {
-	s_crashLogPath[0] = '\0';
-	if (gamedir && gamedir[0]) {
-		safeStrcat(s_crashLogPath, gamedir, sizeof(s_crashLogPath));
-		safeStrcat(s_crashLogPath, "/crash.log", sizeof(s_crashLogPath));
-	} else {
-		safeStrcat(s_crashLogPath, "/sdcard/cs16client/crash.log", sizeof(s_crashLogPath));
-	}
-}
-
-void CrashHandler_SetEngineVersion(const char *ver) {
-	s_engineVersion[0] = '\0';
-	if (ver && ver[0]) safeStrcat(s_engineVersion, ver, sizeof(s_engineVersion));
-}
-
-void CrashHandler_SetPatcherVersion(const char *ver) {
-	s_patcherVersion[0] = '\0';
-	if (ver && ver[0]) safeStrcat(s_patcherVersion, ver, sizeof(s_patcherVersion));
-}
-
 static void CrashHandler_WriteHeader(void) {
 	// Use fallback path if SetGameDir was never called
 	char logPath[256];
@@ -855,6 +806,55 @@ static void CrashHandler_WriteHeader(void) {
 
 	writeStr(fd, "\n--- Running (no crash) ---\n");
 	close(fd);
+}
+
+void CrashHandler_Init(void) {
+	// Set up an alternate signal stack
+	static char s_signalStack[SIGSTKSZ];
+	stack_t ss;
+	memset(&ss, 0, sizeof(ss));
+	ss.ss_sp = s_signalStack;
+	ss.ss_size = SIGSTKSZ;
+	ss.ss_flags = 0;
+	sigaltstack(&ss, NULL);
+
+	CrashHandler_Install();
+}
+
+void CrashHandler_Install(void) {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = crashHandler;
+	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+	sigemptyset(&sa.sa_mask);
+
+	int sigs[] = { SIGILL, SIGSEGV, SIGBUS, SIGABRT, SIGFPE };
+	for (int i = 0; i < 5; i++) {
+		sigaction(sigs[i], &sa, &s_oldHandlers[sigs[i]]);
+	}
+
+	// Write init header to crash.log so we know handler is active
+	CrashHandler_WriteHeader();
+}
+
+void CrashHandler_SetGameDir(const char *gamedir) {
+	s_crashLogPath[0] = '\0';
+	if (gamedir && gamedir[0]) {
+		safeStrcat(s_crashLogPath, gamedir, sizeof(s_crashLogPath));
+		safeStrcat(s_crashLogPath, "/crash.log", sizeof(s_crashLogPath));
+	} else {
+		safeStrcat(s_crashLogPath, "/sdcard/cs16client/crash.log", sizeof(s_crashLogPath));
+	}
+}
+
+void CrashHandler_SetEngineVersion(const char *ver) {
+	s_engineVersion[0] = '\0';
+	if (ver && ver[0]) safeStrcat(s_engineVersion, ver, sizeof(s_engineVersion));
+}
+
+void CrashHandler_SetPatcherVersion(const char *ver) {
+	s_patcherVersion[0] = '\0';
+	if (ver && ver[0]) safeStrcat(s_patcherVersion, ver, sizeof(s_patcherVersion));
 }
 
 #endif // __ANDROID__
