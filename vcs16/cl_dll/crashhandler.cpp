@@ -130,6 +130,146 @@ static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	return count;
 }
 
+// ─── .symtab reader from disk (mmap, async-signal-safe) ─────────────────────
+
+static int tryReadSymtab(const char *so_path,
+                          ElfW(Sym) **out_sym, char **out_str, size_t *out_count) {
+	*out_sym = NULL; *out_str = NULL; *out_count = 0;
+
+	int fd = open(so_path, O_RDONLY);
+	if (fd < 0) return 0;
+
+	ElfW(Ehdr) ehdr;
+	if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) { close(fd); return 0; }
+	if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) { close(fd); return 0; }
+
+	size_t sh_total = (size_t)ehdr.e_shnum * (size_t)ehdr.e_shentsize;
+	if (sh_total > 131072 || ehdr.e_shnum == 0) { close(fd); return 0; }
+
+	char shdr_buf[131072];
+	if (lseek(fd, ehdr.e_shoff, SEEK_SET) < 0) { close(fd); return 0; }
+	if (read(fd, shdr_buf, sh_total) != (ssize_t)sh_total) { close(fd); return 0; }
+
+	ElfW(Shdr) *shdr = (ElfW(Shdr) *)shdr_buf;
+
+	if (ehdr.e_shstrndx >= ehdr.e_shnum) { close(fd); return 0; }
+	ElfW(Shdr) *shstr = &shdr[ehdr.e_shstrndx];
+	if (shstr->sh_size > 65536) { close(fd); return 0; }
+
+	char shstrtab[65536];
+	if (lseek(fd, shstr->sh_offset, SEEK_SET) < 0) { close(fd); return 0; }
+	if (read(fd, shstrtab, shstr->sh_size) != (ssize_t)shstr->sh_size) { close(fd); return 0; }
+
+	ElfW(Shdr) *symtab_sh = NULL;
+	ElfW(Shdr) *strtab_sh = NULL;
+
+	for (int i = 0; i < ehdr.e_shnum; i++) {
+		if (shdr[i].sh_name >= shstr->sh_size) continue;
+		const char *name = shstrtab + shdr[i].sh_name;
+		if (shdr[i].sh_type == SHT_SYMTAB && strcmp(name, ".symtab") == 0) symtab_sh = &shdr[i];
+		if (shdr[i].sh_type == SHT_STRTAB && strcmp(name, ".strtab") == 0) strtab_sh = &shdr[i];
+	}
+
+	if (!symtab_sh || !strtab_sh) { close(fd); return 0; }
+	if (symtab_sh->sh_size > 1048576 || strtab_sh->sh_size > 1048576) { close(fd); return 0; }
+
+	void *symtab = mmap(NULL, symtab_sh->sh_size, PROT_READ, MAP_PRIVATE, fd, symtab_sh->sh_offset);
+	void *strtab = mmap(NULL, strtab_sh->sh_size, PROT_READ, MAP_PRIVATE, fd, strtab_sh->sh_offset);
+
+	if (symtab == MAP_FAILED || strtab == MAP_FAILED) {
+		if (symtab != MAP_FAILED) munmap(symtab, symtab_sh->sh_size);
+		if (strtab != MAP_FAILED) munmap(strtab, strtab_sh->sh_size);
+		close(fd);
+		return 0;
+	}
+
+	*out_sym = (ElfW(Sym) *)symtab;
+	*out_str = (char *)strtab;
+	*out_count = symtab_sh->sh_size / symtab_sh->sh_entsize;
+	close(fd);
+	return 1;
+}
+
+static void findSymtabSymbol(ElfW(Sym) *sym, const char *strtab, size_t count,
+                              unsigned long base, unsigned long addr,
+                              char *out, size_t outSize) {
+	out[0] = '\0';
+	const char *best_name = NULL;
+	unsigned long best_addr = 0;
+	unsigned long best_size = 0;
+
+	for (size_t i = 0; i < count; i++) {
+		const ElfW(Sym) *s = &sym[i];
+		int type = ELF64_ST_TYPE(s->st_info);
+		if (type != STT_FUNC) continue;
+		if (s->st_shndx == SHN_UNDEF || s->st_value == 0) continue;
+		unsigned long func_addr = base + s->st_value;
+		if (func_addr <= addr && func_addr > best_addr) {
+			best_addr = func_addr;
+			best_size = s->st_size;
+			best_name = strtab + s->st_name;
+		}
+	}
+
+	if (best_name && best_name[0]) {
+		unsigned long func_off = addr - best_addr;
+		out[0] = '\0';
+		safeStrcat(out, best_name, outSize);
+		if (func_off > 0) {
+			safeStrcat(out, "+0x", outSize);
+			char hex[20];
+			safeIntToHex(hex, func_off, sizeof(hex));
+			safeStrcat(out, hex, outSize);
+		}
+		if (best_size > 0) {
+			safeStrcat(out, " [size=0x", outSize);
+			char hex[20];
+			safeIntToHex(hex, best_size, sizeof(hex));
+			safeStrcat(out, hex, outSize);
+			safeStrcat(out, "]", outSize);
+		}
+	}
+}
+
+// ─── memory map dump (async-signal-safe via open/read) ──────────────────────
+
+static void dumpMaps(int fd, unsigned long addr, unsigned long addr30, unsigned long addr16) {
+	write(fd, "\n--- Memory Maps (executable) ---\n", 33);
+
+	int maps_fd = open("/proc/self/maps", O_RDONLY);
+	if (maps_fd < 0) return;
+
+	char buf[4096];
+	int n;
+	while ((n = read(maps_fd, buf, sizeof(buf))) > 0) {
+		char *line = buf;
+		char *end = buf + n;
+		while (line < end) {
+			char *eol = line;
+			while (eol < end && *eol != '\n' && *eol != '\0') eol++;
+
+			if (eol - line > 6 && line[3] == 'x') {
+				write(fd, line, eol - line);
+				write(fd, "\n", 1);
+
+				unsigned long start = 0, end_addr = 0;
+				char *p = line;
+				while (p < eol && *p != '-') { start = start * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0'); p++; }
+				p++;
+				while (p < eol && *p != ' ') { end_addr = end_addr * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0'); p++; }
+
+				if (addr >= start && addr < end_addr) write(fd, "    <<< FAULT ADDR\n", 19);
+				if (addr30 >= start && addr30 < end_addr) write(fd, "    <<< LR (x30)\n", 17);
+				if (addr16 >= start && addr16 < end_addr) write(fd, "    <<< x16\n", 12);
+			}
+
+			if (eol < end) line = eol + 1;
+			else break;
+		}
+	}
+	close(maps_fd);
+}
+
 // ─── ELF symbol resolution via /proc/self/maps (async-signal-safe) ───────────
 // We avoid dl_iterate_phdr because it uses pthread_mutex_lock inside Bionic
 // and deadlocks in signal handlers. Instead, parse /proc/self/maps directly.
