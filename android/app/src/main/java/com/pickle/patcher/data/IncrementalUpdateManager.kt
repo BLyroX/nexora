@@ -162,6 +162,45 @@ object IncrementalUpdateManager {
     }
 
     /**
+     * Download a single file from the release.
+     */
+    suspend fun downloadSingle(
+        asset: AssetInfo,
+        libsDir: File,
+        abi: String,
+    ) {
+        val targetDir = File(libsDir, abi)
+        targetDir.mkdirs()
+
+        val destFile = File(targetDir, asset.cleanName)
+        destFile.parentFile?.mkdirs()
+
+        val req = Request.Builder()
+            .url(asset.downloadUrl)
+            .header("User-Agent", "cs16-amxx-patcher")
+            .header("Accept", "application/octet-stream")
+            .build()
+
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IllegalStateException("Download failed for ${asset.assetName}: ${resp.code}")
+            }
+            val body = resp.body ?: throw IllegalStateException("Empty body for ${asset.assetName}")
+            body.byteStream().use { input ->
+                destFile.outputStream().use { output ->
+                    val buffer = ByteArray(65536)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        output.write(buffer, 0, n)
+                    }
+                }
+            }
+            destFile.setExecutable(true)
+        }
+    }
+
+    /**
      * Load all .so files from libs/<abi>/ for patching.
      * Returns Map<targetPath, fileBytes> compatible with ZipRepacker.
      */
@@ -176,12 +215,10 @@ object IncrementalUpdateManager {
         targetDir.listFiles()?.filter { it.isFile && it.extension == "so" }?.forEach { file ->
             val name = file.name
             val targetPath = getTargetPath(name, abi, suffix, modSuffix)
-            android.util.Log.d("CS16Patcher", "loadBundle: $name -> $targetPath (${file.length()} bytes)")
             if (targetPath != null) {
                 files[targetPath] = file.readBytes()
             }
         }
-        android.util.Log.d("CS16Patcher", "loadBundle: ${files.size} files loaded, keys=${files.keys}")
         return files
     }
 

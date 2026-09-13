@@ -72,6 +72,14 @@ data class SmaSource(val path: String, val name: String, val hasInclude: Boolean
     val scriptDir: String get() = File(path).parentFile?.absolutePath.orEmpty()
 }
 
+data class LibInfo(
+    val name: String,
+    val localSize: Long,
+    val releaseSize: Long,
+    val upToDate: Boolean,
+    val downloading: Boolean = false,
+)
+
 sealed interface CompileState {
     data object Idle : CompileState
     data class Compiling(val source: String) : CompileState
@@ -108,10 +116,14 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             loadedBundle = null
             _bundle.value = BundleState.None
         }
+        scanLibs()
     }
 
     private val _addons = MutableStateFlow<AddonsState>(AddonsState.None)
     val addons: StateFlow<AddonsState> = _addons.asStateFlow()
+
+    private val _libs = MutableStateFlow<List<LibInfo>>(emptyList())
+    val libs: StateFlow<List<LibInfo>> = _libs.asStateFlow()
 
     private val _scripts = MutableStateFlow<List<SmaSource>>(emptyList())
     val scripts: StateFlow<List<SmaSource>> = _scripts.asStateFlow()
@@ -251,6 +263,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             val b = buildBundleFromFiles(files, abi)
             loadedBundle = b
             _bundle.value = BundleState.Loaded
+            scanLibs()
             return
         }
         // Fallback: try legacy cached bundle zip
@@ -258,12 +271,62 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         if (b != null) {
             loadedBundle = b
             _bundle.value = BundleState.Ready("Cached", b.manifest.entries.size, b.manifest.version)
+            scanLibs()
         }
     }
 
     fun useLoadedBundle() {
         val b = loadedBundle ?: return
         _bundle.value = BundleState.Ready("Loaded", b.manifest.entries.size, b.manifest.version)
+    }
+
+    fun scanLibs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val rel = ReleaseRepository.latest(repo)
+                val tagName = rel.name.ifBlank { rel.tag_name }
+                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                val targetDir = File(libsDir, _abi.value)
+                val result = mutableListOf<LibInfo>()
+                for (asset in assets) {
+                    val fileOnDisk = File(targetDir, asset.cleanName)
+                    val localSize = if (fileOnDisk.exists()) fileOnDisk.length() else 0L
+                    result.add(LibInfo(
+                        name = asset.cleanName,
+                        localSize = localSize,
+                        releaseSize = asset.size,
+                        upToDate = localSize == asset.size,
+                    ))
+                }
+                _libs.value = result
+            } catch (_: Throwable) {
+                _libs.value = emptyList()
+            }
+        }
+    }
+
+    fun refreshSingleLib(libName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _libs.value = _libs.value.map {
+                if (it.name == libName) it.copy(downloading = true) else it
+            }
+            try {
+                val rel = ReleaseRepository.latest(repo)
+                val tagName = rel.name.ifBlank { rel.tag_name }
+                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                val asset = assets.find { it.cleanName == libName } ?: return@launch
+                IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value)
+                val fileOnDisk = File(File(libsDir, _abi.value), libName)
+                val newSize = if (fileOnDisk.exists()) fileOnDisk.length() else 0L
+                _libs.value = _libs.value.map {
+                    if (it.name == libName) LibInfo(libName, newSize, asset.size, newSize == asset.size) else it
+                }
+            } catch (t: Throwable) {
+                _libs.value = _libs.value.map {
+                    if (it.name == libName) it.copy(downloading = false) else it
+                }
+            }
+        }
     }
 
     fun fetchAndDownloadBundle() {

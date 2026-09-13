@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,9 +15,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -46,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.pickle.patcher.lib.ApkPatcher
 import com.pickle.patcher.patcher.AddonsState
 import com.pickle.patcher.patcher.BundleState
+import com.pickle.patcher.patcher.LibInfo
 import com.pickle.patcher.patcher.PatchUiState
 import com.pickle.patcher.patcher.PatcherViewModel
 import com.pickle.patcher.ui.theme.Accent
@@ -91,6 +96,11 @@ fun PatchScreen(vm: PatcherViewModel) {
 
         SectionHeader("MOD BUNDLE")
         BundleCard(vm)
+
+        Spacer(Modifier.height(12.dp))
+
+        SectionHeader("LIBS")
+        LibListCard(vm)
 
         Spacer(Modifier.height(16.dp))
 
@@ -284,6 +294,78 @@ private fun BundleCard(vm: PatcherViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LibListCard(vm: PatcherViewModel) {
+    val libs by vm.libs.collectAsState()
+
+    AppCard {
+        if (libs.isEmpty()) {
+            Text(
+                "No libs found. Load a bundle first.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Gray40,
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                items(libs, key = { it.name }) { lib ->
+                    LibRow(
+                        lib = lib,
+                        onRefresh = { vm.refreshSingleLib(lib.name) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibRow(lib: LibInfo, onRefresh: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                lib.name.removeSuffix(".so").removePrefix("lib"),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (lib.localSize > 0) {
+                    val local = lib.localSize.mb()
+                    val release = lib.releaseSize.mb()
+                    if (lib.upToDate) "$local (up to date)" else "$local → $release"
+                } else "Not installed",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (lib.upToDate) Gray60 else AlertRed,
+            )
+        }
+        if (lib.downloading) {
+            Icon(
+                Icons.Filled.Download,
+                contentDescription = "Downloading",
+                modifier = Modifier.size(20.dp),
+                tint = Accent,
+            )
+        } else {
+            Icon(
+                Icons.Filled.Refresh,
+                contentDescription = "Refresh",
+                modifier = Modifier
+                    .size(20.dp)
+                    .clickable { onRefresh() },
+                tint = if (lib.upToDate) Gray60 else Accent,
+            )
         }
     }
 }
