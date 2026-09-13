@@ -8,9 +8,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <unwind.h>
-#include <dlfcn.h>
 #include <elf.h>
-#include <link.h>
 #include <sys/mman.h>
 #include <sys/system_properties.h>
 #include <time.h>
@@ -132,408 +130,143 @@ static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	return count;
 }
 
-// ─── ELF symbol resolution via dl_iterate_phdr ──────────────────────────────
+// ─── ELF symbol resolution via /proc/self/maps (async-signal-safe) ───────────
+// We avoid dl_iterate_phdr because it uses pthread_mutex_lock inside Bionic
+// and deadlocks in signal handlers. Instead, parse /proc/self/maps directly.
 
-struct LibInfo {
-	void *target_addr;     // address we're resolving
-	unsigned long base;    // dlpi_addr (load bias)
-	const ElfW(Phdr) *phdr;
-	int phnum;
-	char name[256];
-	void *dynsym;
-	void *dynstr;
-	size_t dynstr_size;
-	size_t sym_entsize;
-	char build_id[64];
-	int has_build_id;
-	int found;
+struct MapsEntry {
+	unsigned long start;
+	unsigned long end;
+	unsigned long offset;
+	char path[256];
 };
 
-static int resolveCallback(struct dl_phdr_info *info, size_t size, void *data) {
-	struct LibInfo *li = (struct LibInfo *)data;
-	unsigned long base = (unsigned long)info->dlpi_addr;
-
-	for (int i = 0; i < info->dlpi_phnum; i++) {
-		const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
-		if (ph->p_type != PT_LOAD) continue;
-
-		unsigned long seg_start = base + ph->p_vaddr;
-		unsigned long seg_end = seg_start + ph->p_memsz;
-
-		if ((unsigned long)li->target_addr >= seg_start && (unsigned long)li->target_addr < seg_end) {
-			li->base = base;
-			li->phdr = info->dlpi_phdr;
-			li->phnum = info->dlpi_phnum;
-
-			if (info->dlpi_name && info->dlpi_name[0]) {
-				const char *slash = strrchr(info->dlpi_name, '/');
-				if (slash) safeStrcat(li->name, slash + 1, sizeof(li->name));
-				else safeStrcat(li->name, info->dlpi_name, sizeof(li->name));
-			} else {
-				safeStrcat(li->name, "[main]", sizeof(li->name));
-			}
-
-			// Parse PT_DYNAMIC for .dynsym/.dynstr
-			for (int j = 0; j < info->dlpi_phnum; j++) {
-				const ElfW(Phdr) *dyn_ph = &info->dlpi_phdr[j];
-				if (dyn_ph->p_type != PT_DYNAMIC) continue;
-
-				const ElfW(Dyn) *dyn = (const ElfW(Dyn) *)(base + dyn_ph->p_vaddr);
-				while (dyn->d_tag != DT_NULL) {
-					switch (dyn->d_tag) {
-						case DT_SYMTAB:  li->dynsym = (void *)dyn->d_un.d_ptr; break;
-						case DT_STRTAB:  li->dynstr = (void *)dyn->d_un.d_ptr; break;
-						case DT_STRSZ:   li->dynstr_size = dyn->d_un.d_val; break;
-						case DT_SYMENT:  li->sym_entsize = dyn->d_un.d_val; break;
-					}
-					dyn++;
-				}
-				break;
-			}
-
-			// Parse PT_NOTE for build-id (NT_GNU_BUILD_ID = type 3, "GNU" name)
-			for (int j = 0; j < info->dlpi_phnum; j++) {
-				const ElfW(Phdr) *note_ph = &info->dlpi_phdr[j];
-				if (note_ph->p_type != PT_NOTE) continue;
-
-				const unsigned char *nb = (const unsigned char *)(base + note_ph->p_vaddr);
-				const unsigned char *ne = nb + note_ph->p_filesz;
-				const unsigned char *p = nb;
-
-				while (p + 12 <= ne) {
-					uint32_t namesz = *(const uint32_t *)p;
-					uint32_t descsz = *(const uint32_t *)(p + 4);
-					uint32_t type   = *(const uint32_t *)(p + 8);
-					p += 12;
-					const char *name = (const char *)p;
-					p += (namesz + 3) & ~3;
-					const unsigned char *desc = p;
-					p += (descsz + 3) & ~3;
-
-					if (namesz == 4 && memcmp(name, "GNU", 4) == 0 && type == 3) {
-						li->has_build_id = 1;
-						char *out = li->build_id;
-						for (size_t k = 0; k < descsz && k < 20; k++) {
-							const char hx[] = "0123456789abcdef";
-							*out++ = hx[(desc[k] >> 4) & 0xf];
-							*out++ = hx[desc[k] & 0xf];
-						}
-						*out = '\0';
-					}
-				}
-				break;
-			}
-
-			li->found = 1;
-			return 1;
-		}
-	}
-	return 0;
-}
-
-// Find closest function symbol in .dynsym (from loaded memory, no allocation)
-static void findDynsymSymbol(struct LibInfo *li, unsigned long addr, char *out, size_t outSize) {
-	out[0] = '\0';
-	if (!li->dynsym || !li->dynstr || li->sym_entsize == 0) return;
-
-	const char *strtab = (const char *)li->dynstr;
-	unsigned long base = li->base;
-
-	const char *best_name = NULL;
-	unsigned long best_addr = 0;
-
-	// Walk .dynsym entries safely (limit to reasonable count)
-	for (size_t i = 0; i < 8192; i++) {
-		const ElfW(Sym) *s = (const ElfW(Sym) *)((const char *)li->dynsym + i * li->sym_entsize);
-
-		// Safety: stop if we've gone past the string table
-		if ((const void *)s >= (const void *)li->dynstr) break;
-
-		int type = ELF64_ST_TYPE(s->st_info);
-		if (type != STT_FUNC) continue;
-		if (s->st_shndx == SHN_UNDEF) continue;
-		if (s->st_value == 0) continue;
-
-		unsigned long func_addr = base + s->st_value;
-		if (func_addr <= addr && func_addr > best_addr) {
-			best_addr = func_addr;
-			if (s->st_name < li->dynstr_size) {
-				best_name = strtab + s->st_name;
-			}
-		}
-	}
-
-	if (best_name && best_name[0]) {
-		unsigned long offset = addr - best_addr;
-		out[0] = '\0';
-		safeStrcat(out, best_name, outSize);
-		if (offset > 0) {
-			safeStrcat(out, "+0x", outSize);
-			char hex[20];
-			safeIntToHex(hex, offset, sizeof(hex));
-			safeStrcat(out, hex, outSize);
-		}
-	}
-}
-
-// Try to read .symtab from disk for full symbol table (uses open/read/mmap, no malloc)
-// Returns 1 on success, 0 on failure
-static int tryReadSymtab(const char *so_path,
-                          ElfW(Sym) **out_sym, char **out_str, size_t *out_count) {
-	*out_sym = NULL; *out_str = NULL; *out_count = 0;
-
-	int fd = open(so_path, O_RDONLY);
-	if (fd < 0) return 0;
-
-	// Read ELF header
-	ElfW(Ehdr) ehdr;
-	if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) { close(fd); return 0; }
-	if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) { close(fd); return 0; }
-
-	// Read all section headers into stack buffer (max ~128KB)
-	size_t sh_total = (size_t)ehdr.e_shnum * (size_t)ehdr.e_shentsize;
-	if (sh_total > 131072 || ehdr.e_shnum == 0) { close(fd); return 0; }
-
-	char shdr_buf[131072];
-	if (lseek(fd, ehdr.e_shoff, SEEK_SET) < 0) { close(fd); return 0; }
-	if (read(fd, shdr_buf, sh_total) != (ssize_t)sh_total) { close(fd); return 0; }
-
-	ElfW(Shdr) *shdr = (ElfW(Shdr) *)shdr_buf;
-
-	// Read shstrtab
-	if (ehdr.e_shstrndx >= ehdr.e_shnum) { close(fd); return 0; }
-	ElfW(Shdr) *shstr = &shdr[ehdr.e_shstrndx];
-	if (shstr->sh_size > 65536) { close(fd); return 0; }
-
-	char shstrtab[65536];
-	if (lseek(fd, shstr->sh_offset, SEEK_SET) < 0) { close(fd); return 0; }
-	if (read(fd, shstrtab, shstr->sh_size) != (ssize_t)shstr->sh_size) { close(fd); return 0; }
-
-	// Find .symtab and .strtab
-	ElfW(Shdr) *symtab_sh = NULL;
-	ElfW(Shdr) *strtab_sh = NULL;
-
-	for (int i = 0; i < ehdr.e_shnum; i++) {
-		if (shdr[i].sh_name >= shstr->sh_size) continue;
-		const char *name = shstrtab + shdr[i].sh_name;
-
-		if (shdr[i].sh_type == SHT_SYMTAB && strcmp(name, ".symtab") == 0) {
-			symtab_sh = &shdr[i];
-		}
-		if (shdr[i].sh_type == SHT_STRTAB && strcmp(name, ".strtab") == 0) {
-			strtab_sh = &shdr[i];
-		}
-	}
-
-	if (!symtab_sh || !strtab_sh) { close(fd); return 0; }
-	if (symtab_sh->sh_size > 1048576 || strtab_sh->sh_size > 1048576) { close(fd); return 0; }
-
-	// Read .symtab and .strtab using mmap (async-signal-safe on Linux/Android)
-	void *symtab = mmap(NULL, symtab_sh->sh_size, PROT_READ, MAP_PRIVATE, fd, symtab_sh->sh_offset);
-	void *strtab = mmap(NULL, strtab_sh->sh_size, PROT_READ, MAP_PRIVATE, fd, strtab_sh->sh_offset);
-
-	if (symtab == MAP_FAILED || strtab == MAP_FAILED) {
-		if (symtab != MAP_FAILED) munmap(symtab, symtab_sh->sh_size);
-		if (strtab != MAP_FAILED) munmap(strtab, strtab_sh->sh_size);
-		close(fd);
-		return 0;
-	}
-
-	*out_sym = (ElfW(Sym) *)symtab;
-	*out_str = (char *)strtab;
-	*out_count = symtab_sh->sh_size / symtab_sh->sh_entsize;
-
-	close(fd);
-	return 1;
-}
-
-// Find closest function in .symtab (from mmap'd disk file)
-static void findSymtabSymbol(ElfW(Sym) *sym, const char *strtab, size_t count,
-                              unsigned long base, unsigned long addr,
-                              char *out, size_t outSize) {
-	out[0] = '\0';
-
-	const char *best_name = NULL;
-	unsigned long best_addr = 0;
-	unsigned long best_size = 0;
-
-	for (size_t i = 0; i < count; i++) {
-		const ElfW(Sym) *s = &sym[i];
-		int type = ELF64_ST_TYPE(s->st_info);
-		if (type != STT_FUNC) continue;
-		if (s->st_shndx == SHN_UNDEF || s->st_value == 0) continue;
-
-		unsigned long func_addr = base + s->st_value;
-		if (func_addr <= addr && func_addr > best_addr) {
-			best_addr = func_addr;
-			best_size = s->st_size;
-			best_name = strtab + s->st_name;
-		}
-	}
-
-	if (best_name && best_name[0]) {
-		unsigned long func_off = addr - best_addr;
-		out[0] = '\0';
-		safeStrcat(out, best_name, outSize);
-		if (func_off > 0) {
-			safeStrcat(out, "+0x", outSize);
-			char hex[20];
-			safeIntToHex(hex, func_off, sizeof(hex));
-			safeStrcat(out, hex, outSize);
-		}
-		if (best_size > 0) {
-			safeStrcat(out, " [size=0x", outSize);
-			char hex[20];
-			safeIntToHex(hex, best_size, sizeof(hex));
-			safeStrcat(out, hex, outSize);
-			safeStrcat(out, "]", outSize);
-		}
-	}
-}
-
-// ─── memory map dump (async-signal-safe via open/read) ──────────────────────
-
-static void dumpMaps(int fd, unsigned long addr, unsigned long addr30, unsigned long addr16) {
-	write(fd, "\n--- Memory Maps (executable) ---\n", 33);
-
+// Parse /proc/self/maps to find which library owns an address.
+// Returns 1 on success, 0 on failure.
+static int findMapsEntry(unsigned long addr, MapsEntry *out) {
 	int maps_fd = open("/proc/self/maps", O_RDONLY);
-	if (maps_fd < 0) return;
+	if (maps_fd < 0) return 0;
 
 	char buf[4096];
 	int n;
-	while ((n = read(maps_fd, buf, sizeof(buf))) > 0) {
+	int found = 0;
+
+	while ((n = read(maps_fd, buf, sizeof(buf) - 1)) > 0) {
+		buf[n] = '\0';
 		char *line = buf;
-		char *end = buf + n;
-		while (line < end) {
+		while (line < buf + n && !found) {
 			char *eol = line;
-			while (eol < end && *eol != '\n' && *eol != '\0') eol++;
+			while (eol < buf + n && *eol != '\n') eol++;
 
-			// Only executable segments (perms at offset 3 == 'x')
-			if (eol - line > 6 && line[3] == 'x') {
-				write(fd, line, eol - line);
-				write(fd, "\n", 1);
+			// Parse: start-end offset dev inode pathname
+			unsigned long start = 0, end = 0, offset = 0;
+			char *p = line;
 
-				// Parse start/end addresses
-				unsigned long start = 0, end_addr = 0;
-				char *p = line;
-				while (p < eol && *p != '-') { start = start * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0'); p++; }
+			// Parse start
+			while (p < eol && *p >= '0' && *p <= '9') {
+				start = start * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0');
 				p++;
-				while (p < eol && *p != ' ') { end_addr = end_addr * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0'); p++; }
-
-				if (addr >= start && addr < end_addr) write(fd, "    <<< FAULT ADDR\n", 19);
-				if (addr30 >= start && addr30 < end_addr) write(fd, "    <<< LR (x30)\n", 17);
-				if (addr16 >= start && addr16 < end_addr) write(fd, "    <<< x16\n", 12);
+			}
+			if (p < eol && *p == '-') p++;
+			// Parse end
+			while (p < eol && *p >= '0' && *p <= '9') {
+				end = end * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0');
+				p++;
+			}
+			// Skip perms (rwxp)
+			while (p < eol && *p != ' ') p++;
+			if (p < eol) p++;
+			// Parse offset
+			while (p < eol && *p >= '0' && *p <= '9') {
+				offset = offset * 16 + (*p >= 'a' ? *p - 'a' + 10 : *p >= 'A' ? *p - 'A' + 10 : *p - '0');
+				p++;
 			}
 
-			if (eol < end) line = eol + 1;
+			if (addr >= start && addr < end) {
+				// Skip dev + inode, find pathname
+				for (int s = 0; s < 2 && p < eol; s++) {
+					while (p < eol && *p != ' ') p++;
+					if (p < eol) p++;
+				}
+				// Skip leading spaces
+				while (p < eol && *p == ' ') p++;
+
+				size_t plen = (size_t)(eol - p);
+				if (plen > 0 && plen < sizeof(out->path)) {
+					out->start = start;
+					out->end = end;
+					out->offset = offset;
+					memcpy(out->path, p, plen);
+					out->path[plen] = '\0';
+					found = 1;
+				}
+			}
+
+			if (eol < buf + n) line = eol + 1;
 			else break;
 		}
+		if (found) break;
 	}
 	close(maps_fd);
+	return found;
 }
 
-// ─── enhanced address resolver ──────────────────────────────────────────────
-
+// Resolve address using maps + .symtab from disk (all async-signal-safe)
 static void resolveAddressEnhanced(char *buf, size_t bufSize, void *addr, int log_fd) {
-	struct LibInfo lib;
-	memset(&lib, 0, sizeof(lib));
-	lib.target_addr = addr;
+	unsigned long target = (unsigned long)addr;
+	buf[0] = '\0';
 
-	dl_iterate_phdr(resolveCallback, &lib);
+	MapsEntry maps;
+	memset(&maps, 0, sizeof(maps));
 
-	if (!lib.found) {
-		buf[0] = '\0';
+	if (!findMapsEntry(target, &maps)) {
 		safeStrcat(buf, "0x", bufSize);
 		char hex[20];
-		safeIntToHex(hex, (unsigned long)addr, sizeof(hex));
+		safeIntToHex(hex, target, sizeof(hex));
 		safeStrcat(buf, hex, bufSize);
 		return;
 	}
 
-	unsigned long offset = (unsigned long)addr - lib.base;
+	// Library name from path
+	const char *libName = maps.path;
+	const char *slash = strrchr(maps.path, '/');
+	if (slash) libName = slash + 1;
 
-	buf[0] = '\0';
+	unsigned long offset = target - maps.start + maps.offset;
+
 	safeStrcat(buf, "[", bufSize);
-	safeStrcat(buf, lib.name, bufSize);
+	safeStrcat(buf, libName, bufSize);
 	safeStrcat(buf, "+0x", bufSize);
 	char hex[20];
 	safeIntToHex(hex, offset, sizeof(hex));
 	safeStrcat(buf, hex, bufSize);
 	safeStrcat(buf, "] ", bufSize);
 
-	// Resolve .so path from /proc/self/maps
-	char so_path[256] = {0};
-	{
-		int maps_fd = open("/proc/self/maps", O_RDONLY);
-		if (maps_fd >= 0) {
-			char maps_buf[4096];
-			int maps_len = read(maps_fd, maps_buf, sizeof(maps_buf) - 1);
-			close(maps_fd);
-			if (maps_len > 0) {
-				maps_buf[maps_len] = '\0';
-				char *mline = maps_buf;
-				while (mline < maps_buf + maps_len) {
-					char *eol = mline;
-					while (eol < maps_buf + maps_len && *eol != '\n') eol++;
-					if (strstr(mline, lib.name)) {
-						char *p = mline;
-						for (int s = 0; s < 5 && p < eol; s++) {
-							while (p < eol && *p != ' ') p++;
-							if (p < eol) p++;
-						}
-						size_t plen = (size_t)(eol - p);
-						if (plen > 0 && plen < sizeof(so_path)) {
-							memcpy(so_path, p, plen);
-							so_path[plen] = '\0';
-						}
-						break;
-					}
-					mline = eol + 1;
-				}
-			}
-		}
-	}
-
-	// Try .symtab from disk (has all functions with sizes)
-	char symtab_result[256] = {0};
-	if (so_path[0]) {
+	// Try .symtab from disk (mmap, async-signal-safe)
+	if (maps.path[0]) {
 		ElfW(Sym) *sym = NULL;
 		char *str = NULL;
 		size_t count = 0;
-		if (tryReadSymtab(so_path, &sym, &str, &count)) {
-			findSymtabSymbol(sym, str, count, lib.base, (unsigned long)addr, symtab_result, sizeof(symtab_result));
+		if (tryReadSymtab(maps.path, &sym, &str, &count)) {
+			char symtab_result[256] = {0};
+			findSymtabSymbol(sym, str, count, maps.start, target, symtab_result, sizeof(symtab_result));
+			if (symtab_result[0]) {
+				safeStrcat(buf, symtab_result, bufSize);
+			}
+			// Don't munmap — we're in a crash handler, _exit(1) cleans up
 		}
 	}
 
-	// Try .dynsym from loaded memory
-	char dynsym_result[256] = {0};
-	findDynsymSymbol(&lib, (unsigned long)addr, dynsym_result, sizeof(dynsym_result));
-
-	// Pick best: .symtab > .dynsym
-	const char *best = symtab_result[0] ? symtab_result : (dynsym_result[0] ? dynsym_result : NULL);
-	if (best) {
-		safeStrcat(buf, best, bufSize);
-	}
-
-	// Write build-id + addr2line hint to crash log
-	if (lib.has_build_id) {
-		char bid[128];
-		bid[0] = '\0';
-		safeStrcat(bid, "  Build-ID: ", sizeof(bid));
-		safeStrcat(bid, lib.build_id, sizeof(bid));
-		safeStrcat(bid, "\n", sizeof(bid));
-		write(log_fd, bid, strlen(bid));
-
-		if (so_path[0]) {
-			char hint[512];
-			hint[0] = '\0';
-			safeStrcat(hint, "  addr2line -e ", sizeof(hint));
-			safeStrcat(hint, so_path, sizeof(hint));
-			safeStrcat(hint, " -f 0x", sizeof(hint));
-			safeStrcat(hint, hex, sizeof(hint));
-			safeStrcat(hint, "\n", sizeof(hint));
-			write(log_fd, hint, strlen(hint));
-		}
+	// Write addr2line hint
+	if (maps.path[0]) {
+		char hint[512];
+		hint[0] = '\0';
+		safeStrcat(hint, "  addr2line -e ", sizeof(hint));
+		safeStrcat(hint, maps.path, sizeof(hint));
+		safeStrcat(hint, " -f 0x", sizeof(hint));
+		safeStrcat(hint, hex, sizeof(hint));
+		safeStrcat(hint, "\n", sizeof(hint));
+		write(log_fd, hint, strlen(hint));
 	}
 }
 
