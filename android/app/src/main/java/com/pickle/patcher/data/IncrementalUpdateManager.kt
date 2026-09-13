@@ -124,7 +124,7 @@ object IncrementalUpdateManager {
 
     /**
      * Download only changed files from the release.
-     * Each file is downloaded as: <repo>/releases/download/<tag>/<filename>.so
+     * Each file is downloaded as: <repo>/releases/download/<tag>/<asset-name>
      * (uploaded as individual release assets by gen-manifest.py)
      */
     suspend fun downloadChanged(
@@ -133,12 +133,16 @@ object IncrementalUpdateManager {
         changed: List<ManifestEntry>,
         libsDir: File,
         abi: String,
+        onFileStart: (index: Int, entry: ManifestEntry) -> Unit = { _, _ -> },
+        onFileProgress: (index: Int, entry: ManifestEntry, fileProgress: Float) -> Unit = { _, _, _ -> },
         onProgress: (downloaded: Int, total: Int, bytesWritten: Long) -> Unit = { _, _, _ -> },
     ) {
         val targetDir = File(libsDir, abi)
         targetDir.mkdirs()
 
         for ((index, entry) in changed.withIndex()) {
+            onFileStart(index, entry)
+
             // Download using ABI-prefixed asset name
             val assetName = entry.asset.ifBlank { entry.name }
             val url = "https://github.com/$repo/releases/download/$tag/$assetName"
@@ -157,6 +161,9 @@ object IncrementalUpdateManager {
                     throw IllegalStateException("Download failed for $assetName: ${resp.code}")
                 }
                 val body = resp.body ?: throw IllegalStateException("Empty body for $assetName")
+                val expectedSize = entry.size.takeIf { it > 0 }
+                    ?: body.contentLength().takeIf { it > 0 }
+                    ?: 0L
                 var written = 0L
                 body.byteStream().use { input ->
                     destFile.outputStream().use { output ->
@@ -166,6 +173,9 @@ object IncrementalUpdateManager {
                             if (n < 0) break
                             output.write(buffer, 0, n)
                             written += n
+                            if (expectedSize > 0) {
+                                onFileProgress(index, entry, (written.toFloat() / expectedSize).coerceIn(0f, 1f))
+                            }
                         }
                     }
                 }

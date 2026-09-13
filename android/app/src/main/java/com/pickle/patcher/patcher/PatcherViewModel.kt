@@ -42,8 +42,15 @@ data class SourceInfo(
 
 sealed interface BundleState {
     data object None : BundleState
+    data object Loaded : BundleState
     data class Ready(val bundleName: String, val entries: Int, val version: String) : BundleState
-    data class Downloading(val percent: Float, val tagName: String = "") : BundleState
+    data class Downloading(
+        val percent: Float,
+        val tagName: String = "",
+        val currentFile: String = "",
+        val fileIndex: Int = 0,
+        val fileTotal: Int = 0,
+    ) : BundleState
     data class DownloadError(val message: String) : BundleState
 }
 
@@ -237,8 +244,29 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun useCachedBundle() {
+        val libsDir = File(getApplication<Application>().filesDir, "libs")
+        val abi = _abi.value
+        val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, abi)
+        if (localManifest != null) {
+            val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, localManifest)
+            if (files.isNotEmpty()) {
+                val b = buildBundle(localManifest, files)
+                loadedBundle = b
+                _bundle.value = BundleState.Loaded
+                return
+            }
+        }
+        // Fallback: try legacy cached bundle zip
         val b = bundleProvider.loadCachedBundle()
-        if (b != null) applyBundle("Downloaded ($CACHE_TAG)", b)
+        if (b != null) {
+            loadedBundle = b
+            _bundle.value = BundleState.Ready("Cached", b.manifest.entries.size, b.manifest.version)
+        }
+    }
+
+    fun useLoadedBundle() {
+        val b = loadedBundle ?: return
+        _bundle.value = BundleState.Ready("Loaded", b.manifest.entries.size, b.manifest.version)
     }
 
     fun fetchAndDownloadBundle() {
@@ -249,84 +277,69 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val tagName = rel.name.ifBlank { rel.tag_name }
                 _releaseNote.value = tagName
 
-                // Try incremental update first (individual .so files + manifest.json)
-                val incrementalSuccess = tryIncrementalUpdate(tagName, _abi.value)
-                if (incrementalSuccess) {
+                val manifest = IncrementalUpdateManager.fetchManifest(repo, tagName, _abi.value)
+                    ?: throw IOException("No manifest.json found for ABI ${_abi.value} in the latest release")
+                _bundle.update { BundleState.Downloading(0.1f, tagName) }
+
+                val libsDir = File(getApplication<Application>().filesDir, "libs")
+                val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, _abi.value)
+                val diff = IncrementalUpdateManager.diff(manifest, localManifest)
+
+                if (diff.changed.isEmpty()) {
+                    val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value, manifest)
+                    if (files.isEmpty()) throw IOException("No .so files found in libs/")
+                    val b = buildBundle(manifest, files)
                     markBundleTagKnown(rel.tag_name)
+                    _bundle.value = BundleState.Loaded
+                    loadedBundle = b
                     return@launch
                 }
 
-                // Fall back to legacy bundle zip
-                val asset = rel.bundleAsset(_abi.value)
-                    ?: throw IOException("No bundle found for ABI ${_abi.value} in the latest release")
-                _bundle.update {
-                    BundleState.Downloading(0.1f, tagName)
-                }
-                val dest = bundleProvider.cachedBundleFile()
-                ReleaseRepository.download(asset, dest) { p ->
-                    _bundle.value = BundleState.Downloading(p, tagName)
-                }
-                val b = Bundle.fromZip(dest.readBytes())
-                    ?: throw IOException("Bundle file is corrupted")
-                _releaseNote.value = rel.name.ifBlank { rel.tag_name }
+                // Download changed files with per-lib progress
+                IncrementalUpdateManager.downloadChanged(
+                    repo, tagName, diff.changed, libsDir, _abi.value,
+                    onFileStart = { index, entry ->
+                        _bundle.update {
+                            BundleState.Downloading(
+                                percent = 0.15f + (0.75f * index.toFloat() / diff.changed.size).coerceAtMost(0.75f),
+                                tagName = tagName,
+                                currentFile = entry.name,
+                                fileIndex = index,
+                                fileTotal = diff.changed.size,
+                            )
+                        }
+                    },
+                    onFileProgress = { index, entry, fileProgress ->
+                        val base = 0.15f + (0.75f * index.toFloat() / diff.changed.size).coerceAtMost(0.75f)
+                        val perFileWeight = 0.75f / diff.changed.size
+                        _bundle.update {
+                            BundleState.Downloading(
+                                percent = base + perFileWeight * fileProgress,
+                                tagName = tagName,
+                                currentFile = entry.name,
+                                fileIndex = index,
+                                fileTotal = diff.changed.size,
+                            )
+                        }
+                    },
+                )
+
+                IncrementalUpdateManager.saveLocalManifest(libsDir, _abi.value, manifest)
+                val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value, manifest)
+                if (files.isEmpty()) throw IOException("No .so files found after download")
+                val b = buildBundle(manifest, files)
                 markBundleTagKnown(rel.tag_name)
-                applyBundle(asset.name, b)
+                _bundle.value = BundleState.Ready(
+                    "Updated ${diff.changed.size} files", b.manifest.entries.size, b.manifest.version
+                )
+                loadedBundle = b
             } catch (t: Throwable) {
                 _bundle.value = BundleState.DownloadError(t.message ?: "Unknown error")
             }
         }
     }
 
-    /**
-     * Attempt incremental update: fetch manifest.json, compare hashes, download only changed .so files.
-     * Returns true if incremental update succeeded, false if we should fall back to legacy bundle zip.
-     */
-    private suspend fun tryIncrementalUpdate(tag: String, abi: String): Boolean {
-        val manifest = IncrementalUpdateManager.fetchManifest(repo, tag, abi) ?: return false
-        _bundle.update { BundleState.Downloading(0.1f, tag) }
-
-        val libsDir = File(getApplication<Application>().filesDir, "libs")
-        val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, abi)
-        val diff = IncrementalUpdateManager.diff(manifest, localManifest)
-
-        if (diff.changed.isEmpty()) {
-            // All files up to date — just load from cache
-            val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, manifest)
-            if (files.isEmpty()) return false
-            val bundleManifest = com.pickle.patcher.lib.BundleManifest(
-                version = manifest.version,
-                game = manifest.game,
-                abi = manifest.abi,
-                entries = manifest.files.map { entry ->
-                    com.pickle.patcher.lib.BundleManifest.BundleEntry(
-                        source = entry.path,
-                        target = entry.target,
-                        method = com.pickle.patcher.lib.BundleManifest.Compression.STORED,
-                        required = entry.required,
-                        description = entry.description,
-                    )
-                },
-            )
-            val b = Bundle(bundleManifest, files)
-            _bundle.value = BundleState.Ready("Cached (${diff.unchanged.size} files)", b.manifest.entries.size, b.manifest.version)
-            loadedBundle = b
-            return true
-        }
-
-        // Download changed files with progress
-        _bundle.update { BundleState.Downloading(0.15f, tag) }
-        IncrementalUpdateManager.downloadChanged(repo, tag, diff.changed, libsDir, abi)
-        { downloaded, total, bytesWritten ->
-            val progress = 0.15f + (0.75f * downloaded.toFloat() / total).coerceAtMost(0.75f)
-            _bundle.value = BundleState.Downloading(progress, tag)
-        }
-
-        // Save updated local manifest
-        IncrementalUpdateManager.saveLocalManifest(libsDir, abi, manifest)
-
-        // Load all files from libs/ and build Bundle
-        val files = IncrementalUpdateManager.loadBundleFiles(libsDir, abi, manifest)
-        if (files.isEmpty()) return false
+    private fun buildBundle(manifest: IncrementalUpdateManager.Manifest, files: Map<String, ByteArray>): Bundle {
         val bundleManifest = com.pickle.patcher.lib.BundleManifest(
             version = manifest.version,
             game = manifest.game,
@@ -341,16 +354,13 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 )
             },
         )
-        val b = Bundle(bundleManifest, files)
-        applyBundle("Incremental ($tag, ${diff.changed.size} updated)", b)
-        return true
+        return Bundle(bundleManifest, files)
     }
 
-    private fun applyBundle(label: String, b: Bundle) {
-        loadedBundle = b
-        _bundle.value = BundleState.Ready(label, b.manifest.entries.size, b.manifest.version)
-    }
-
+    /**
+     * Attempt incremental update: fetch manifest.json, compare hashes, download only changed .so files.
+     * Returns true if incremental update succeeded, false if we should fall back to legacy bundle zip.
+     */
     /**
      * Downloads only the addons package (plugins + modules + configs) from the
      * latest release and extracts it into the device's cstrike folder. The full

@@ -233,7 +233,15 @@ private fun BundleCard(vm: PatcherViewModel) {
                     )
                     Spacer(Modifier.height(4.dp))
                 }
-                Text("Downloading…", style = MaterialTheme.typography.bodySmall, color = Gray40)
+                if (bs.currentFile.isNotBlank()) {
+                    Text(
+                        "Downloading ${bs.fileIndex + 1}/${bs.fileTotal}: ${bs.currentFile}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Gray40,
+                    )
+                } else {
+                    Text("Downloading…", style = MaterialTheme.typography.bodySmall, color = Gray40)
+                }
                 Spacer(Modifier.height(8.dp))
                 AppProgressBar(bs.percent)
             }
@@ -241,6 +249,24 @@ private fun BundleCard(vm: PatcherViewModel) {
                 Text(bs.message, style = MaterialTheme.typography.bodySmall, color = AlertRed)
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton("Retry", onClick = { vm.fetchAndDownloadBundle() })
+            }
+            is BundleState.Loaded -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.CheckCircle, null,
+                        tint = SuccessGreen, modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Libs loaded", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Up to date",
+                            style = MaterialTheme.typography.bodySmall, color = Gray40,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton("Refresh", onClick = { vm.fetchAndDownloadBundle() })
             }
             is BundleState.Ready -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -267,7 +293,8 @@ private fun PatchCard(vm: PatcherViewModel) {
     val state by vm.patch.collectAsState()
     val bundle = vm.bundle.collectAsState().value
     val context = LocalContext.current
-    val canPatch = vm.source.collectAsState().value != null && bundle is BundleState.Ready
+    val canPatch = vm.source.collectAsState().value != null &&
+        (bundle is BundleState.Ready || bundle is BundleState.Loaded)
 
     AppCard {
         when (val s = state) {

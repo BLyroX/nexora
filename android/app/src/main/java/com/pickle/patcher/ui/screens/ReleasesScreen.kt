@@ -110,10 +110,19 @@ fun ReleasesScreen(vm: PatcherViewModel) {
 
             when (val b = bundle) {
                 is BundleState.Downloading -> {
-                    Text("Downloading…", style = MaterialTheme.typography.bodySmall, color = Gray40)
+                    if (b.currentFile.isNotBlank()) {
+                        Text(
+                            "Downloading ${b.fileIndex + 1}/${b.fileTotal}: ${b.currentFile}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Gray40,
+                        )
+                    } else {
+                        Text("Downloading…", style = MaterialTheme.typography.bodySmall, color = Gray40)
+                    }
                 }
                 is BundleState.DownloadError -> StatusRow(AlertRed, b.message)
                 is BundleState.Ready -> StatusRow(SuccessGreen, "${b.bundleName}  ·  v${b.version}")
+                is BundleState.Loaded -> StatusRow(SuccessGreen, "Libs loaded  ·  Up to date")
                 is BundleState.None -> StatusRow(Gray40, "Not downloaded yet.")
             }
 
