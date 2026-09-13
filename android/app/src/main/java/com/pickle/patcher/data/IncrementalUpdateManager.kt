@@ -94,28 +94,42 @@ object IncrementalUpdateManager {
     }
 
     /**
-     * Compare remote manifest against local to find changed files.
-     * Returns entries that need downloading (new or changed hashes).
+     * Compare remote manifest against local manifest + disk to find files that need downloading.
+     * Checks both the manifest entry AND the actual file on disk.
+     * This way, interrupted downloads don't re-download already-fetched files.
      */
-    fun diff(remote: Manifest, local: Manifest?): UpdateResult {
-        if (local == null) {
-            // No local manifest — need everything
-            val totalBytes = remote.files.sumOf { it.size }
-            return UpdateResult(changed = remote.files, unchanged = emptyList(), totalBytes = totalBytes)
-        }
-
-        val localMap = local.files.associateBy { it.asset.ifBlank { it.name } }
+    fun diff(remote: Manifest, local: Manifest?, libsDir: File, abi: String): UpdateResult {
+        val localMap = local?.files?.associateBy { it.asset.ifBlank { it.name } }
+        val targetDir = File(libsDir, abi)
         val changed = mutableListOf<ManifestEntry>()
         val unchanged = mutableListOf<ManifestEntry>()
 
         for (entry in remote.files) {
             val key = entry.asset.ifBlank { entry.name }
-            val localEntry = localMap[key]
-            if (localEntry == null || localEntry.sha256 != entry.sha256) {
-                changed.add(entry)
-            } else {
-                unchanged.add(entry)
+
+            // Check 1: local manifest says this file is unchanged
+            val localEntry = localMap?.get(key)
+            if (localEntry != null && localEntry.sha256 == entry.sha256) {
+                // Manifest matches — but also verify the file actually exists on disk
+                val fileOnDisk = File(targetDir, key)
+                if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
+                    unchanged.add(entry)
+                    continue
+                }
             }
+
+            // Check 2: file exists on disk with correct hash (even if manifest was stale)
+            val fileOnDisk = File(targetDir, key)
+            if (fileOnDisk.exists() && fileOnDisk.length() == entry.size) {
+                val diskHash = sha256File(fileOnDisk)
+                if (diskHash == entry.sha256) {
+                    unchanged.add(entry)
+                    continue
+                }
+            }
+
+            // File needs downloading
+            changed.add(entry)
         }
 
         val totalBytes = changed.sumOf { it.size }

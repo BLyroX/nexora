@@ -282,7 +282,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 _bundle.update { BundleState.Downloading(0.1f, tagName) }
 
                 val localManifest = IncrementalUpdateManager.loadLocalManifest(libsDir, _abi.value)
-                val diff = IncrementalUpdateManager.diff(manifest, localManifest)
+                val diff = IncrementalUpdateManager.diff(manifest, localManifest, libsDir, _abi.value)
 
                 if (diff.changed.isEmpty()) {
                     val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value, manifest)
