@@ -229,6 +229,7 @@ object IncrementalUpdateManager {
         return when {
             name == "libmetamod.so" -> "lib/$abi/libyapb_android_$suffix.so"
             name.startsWith("lib") && name.endsWith(".so") -> "lib/$abi/$name"
+            name.endsWith(".so") -> "lib/$abi/lib$name"
             else -> null
         }
     }

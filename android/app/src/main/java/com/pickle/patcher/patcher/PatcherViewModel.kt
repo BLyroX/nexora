@@ -308,8 +308,9 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val localFiles = if (targetDir.isDirectory) {
                     targetDir.listFiles()
                         ?.filter { it.name.endsWith(".so") }
-                        ?.map { it.name to it.length() }
-                        ?.toMap()
+                        ?.associate {
+                            it.name.removePrefix("lib") to it.length()
+                        }
                         ?: emptyMap()
                 } else emptyMap()
 
