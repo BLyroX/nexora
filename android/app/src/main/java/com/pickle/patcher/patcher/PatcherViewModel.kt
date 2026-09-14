@@ -125,6 +125,28 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     private val _libs = MutableStateFlow<List<LibInfo>>(emptyList())
     val libs: StateFlow<List<LibInfo>> = _libs.asStateFlow()
 
+    private val _updatePopup = MutableStateFlow<List<LibInfo>>(emptyList())
+    val updatePopup: StateFlow<List<LibInfo>> = _updatePopup.asStateFlow()
+
+    fun dismissUpdatePopup() { _updatePopup.value = emptyList() }
+
+    fun confirmUpdateAll() {
+        val outdated = _updatePopup.value
+        _updatePopup.value = emptyList()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val rel = ReleaseRepository.latest(repo)
+                val tagName = rel.name.ifBlank { rel.tag_name }
+                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                for (lib in outdated) {
+                    val asset = assets.find { it.cleanName == lib.name } ?: continue
+                    IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value)
+                }
+                scanLibs()
+            } catch (_: Throwable) { }
+        }
+    }
+
     private val _scripts = MutableStateFlow<List<SmaSource>>(emptyList())
     val scripts: StateFlow<List<SmaSource>> = _scripts.asStateFlow()
 
@@ -310,6 +332,8 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                         upToDate = release > 0 && local == release,
                     )
                 }
+                val outdated = _libs.value.filter { !it.upToDate && it.releaseSize > 0 }
+                if (outdated.isNotEmpty()) _updatePopup.value = outdated
             } catch (_: Throwable) {
                 _libs.value = emptyList()
             }

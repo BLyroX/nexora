@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Surface
@@ -70,6 +71,51 @@ private fun Long.mb(): String = "${mbFmt.format(this / 1048576.0)} MB"
 @Composable
 fun PatchScreen(vm: PatcherViewModel) {
     val scroll = rememberScrollState()
+    val updatePopupLibs by vm.updatePopup.collectAsState()
+
+    if (updatePopupLibs.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { vm.dismissUpdatePopup() },
+            title = { Text("Update Available") },
+            text = {
+                Column {
+                    Text(
+                        "${updatePopupLibs.size} lib(s) need updating:",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
+                        items(updatePopupLibs) { lib ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    lib.name.removeSuffix(".so").removePrefix("lib"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    "${lib.localSize.mb()} → ${lib.releaseSize.mb()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = AlertRed,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                PrimaryButton(
+                    text = "Update All",
+                    onClick = { vm.confirmUpdateAll() },
+                )
+            },
+            dismissButton = {
+                GhostButton("Later", onClick = { vm.dismissUpdatePopup() })
+            },
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
