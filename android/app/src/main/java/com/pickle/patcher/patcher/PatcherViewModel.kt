@@ -126,40 +126,6 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     private val _libs = MutableStateFlow<List<LibInfo>>(emptyList())
     val libs: StateFlow<List<LibInfo>> = _libs.asStateFlow()
 
-    private val _updatePopup = MutableStateFlow<List<LibInfo>>(emptyList())
-    val updatePopup: StateFlow<List<LibInfo>> = _updatePopup.asStateFlow()
-
-    fun dismissUpdatePopup() { _updatePopup.value = emptyList() }
-
-    fun confirmUpdateAll() {
-        val outdated = _updatePopup.value
-        _updatePopup.value = emptyList()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val rel = ReleaseRepository.latest(repo)
-                val tagName = rel.name.ifBlank { rel.tag_name }
-                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
-                for (lib in outdated) {
-                    val asset = assets.find { it.cleanName == lib.name } ?: continue
-                    _libs.value = _libs.value.map {
-                        if (it.name == lib.name) it.copy(downloading = true, downloadProgress = 0f) else it
-                    }
-                    IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value) { p ->
-                        _libs.value = _libs.value.map {
-                            if (it.name == lib.name) it.copy(downloading = true, downloadProgress = p) else it
-                        }
-                    }
-                    _libs.value = _libs.value.map {
-                        if (it.name == lib.name) it.copy(downloading = false, downloadProgress = 1f) else it
-                    }
-                }
-                scanLibs(autoLoad = true)
-            } catch (_: Throwable) {
-                scanLibs()
-            }
-        }
-    }
-
     private val _scripts = MutableStateFlow<List<SmaSource>>(emptyList())
     val scripts: StateFlow<List<SmaSource>> = _scripts.asStateFlow()
 
@@ -185,7 +151,10 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         if (!savedOutput.isNullOrEmpty() && File(savedOutput).isDirectory) {
             _outputRoot.value = savedOutput
         }
-        scanLibs(autoLoad = true)
+        scanLibs()
+        // On launch, behave as if the mod bundle "Download" was pressed:
+        // download anything outdated, then load the bundle automatically.
+        fetchAndDownloadBundle()
     }
 
     private val _compile = MutableStateFlow<CompileState>(CompileState.Idle)
@@ -346,9 +315,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 val outdated = _libs.value.filter { !it.upToDate && it.releaseSize > 0 }
-                if (outdated.isNotEmpty()) {
-                    _updatePopup.value = outdated
-                } else if (autoLoad) {
+                if (autoLoad && outdated.isEmpty()) {
                     // Everything on disk is up to date — auto-load the bundle so the
                     // user can patch straight away.
                     val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
@@ -394,7 +361,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun fetchAndDownloadBundle() {
-        _updatePopup.value = emptyList()
+        if (_bundle.value is BundleState.Downloading) return
         viewModelScope.launch(Dispatchers.IO) {
             _bundle.value = BundleState.Downloading(0.04f)
             try {
@@ -460,7 +427,16 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 loadedBundle = b
                 scanLibs()
             } catch (t: Throwable) {
-                _bundle.value = BundleState.DownloadError(t.message ?: "Unknown error")
+                // Offline fallback: if there are already libs on disk, load them.
+                val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
+                if (files.isNotEmpty()) {
+                    val b = buildBundleFromFiles(files, _abi.value)
+                    loadedBundle = b
+                    _bundle.value = BundleState.Loaded
+                    scanLibs()
+                } else {
+                    _bundle.value = BundleState.DownloadError(t.message ?: "Unknown error")
+                }
             }
         }
     }
