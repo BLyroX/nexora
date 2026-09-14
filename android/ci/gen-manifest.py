@@ -83,9 +83,7 @@ def collect_entries(libdir: str, abi: str) -> list:
     client_name = f"libclient_android_{suffix}.so"
     add(client_name, f"lib/{abi}/{client_name}", False, "CS16Client client DLL (crash handler)")
 
-    menu_name = f"libmenu_android_{suffix}.so"
-    add(menu_name, f"lib/{abi}/{menu_name}", False, "CS16Client main menu (text banners/buttons)")
-
+    # libmenu intentionally NOT shipped: the text-based menu is broken, stock stays.
     for mod in MODULES:
         modname = f"lib{mod}_amxx_{mod_suffix}.so"
         add(modname, f"lib/{abi}/{modname}", True, f"{mod} module")

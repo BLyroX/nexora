@@ -212,7 +212,9 @@ object IncrementalUpdateManager {
         val modSuffix = if (abi == "arm64-v8a") "amd64" else "arm"
 
         val files = HashMap<String, ByteArray>()
-        targetDir.listFiles()?.filter { it.isFile && it.extension == "so" }?.forEach { file ->
+        targetDir.listFiles()?.filter {
+            it.isFile && it.extension == "so" && !it.name.startsWith("libmenu_")
+        }?.forEach { file ->
             val name = file.name
             val targetPath = getTargetPath(name, abi, suffix, modSuffix)
             if (targetPath != null) {

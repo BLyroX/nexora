@@ -81,17 +81,8 @@ def main():
             "required": False,
             "description": "CS16Client client DLL (crash handler)",
         })
-    # Text-based main menu (mainui_cpp -> libmenu_android_<arch>.so). Replaces
-    # the stock menu so banner titles and menu buttons render as text.
-    menu_so = os.path.join(libdir, f"libmenu_android_{suffix}.so")
-    if os.path.exists(menu_so):
-        entries.append({
-            "source": f"{abidir}/libmenu_android_{suffix}.so",
-            "target": f"{abidir}/libmenu_android_{suffix}.so",
-            "method": "STORED",
-            "required": False,
-            "description": "CS16Client main menu (text banners/buttons)",
-        })
+    # libmenu intentionally NOT embedded: the text-based menu (mainui_cpp ->
+    # libmenu_android_<arch>.so) is broken/misbehaving, so the stock menu stays.
     for mod in MODULES:
         modname = f"lib{mod}_amxx_{mod_suffix}.so"
         p = os.path.join(libdir, modname)
