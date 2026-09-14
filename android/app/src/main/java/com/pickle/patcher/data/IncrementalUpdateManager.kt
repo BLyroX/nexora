@@ -168,6 +168,7 @@ object IncrementalUpdateManager {
         asset: AssetInfo,
         libsDir: File,
         abi: String,
+        onProgress: (Float) -> Unit = {},
     ) {
         val targetDir = File(libsDir, abi)
         targetDir.mkdirs()
@@ -186,6 +187,10 @@ object IncrementalUpdateManager {
                 throw IllegalStateException("Download failed for ${asset.assetName}: ${resp.code}")
             }
             val body = resp.body ?: throw IllegalStateException("Empty body for ${asset.assetName}")
+            val expectedSize = asset.size.takeIf { it > 0 }
+                ?: body.contentLength().takeIf { it > 0 }
+                ?: 0L
+            var written = 0L
             body.byteStream().use { input ->
                 destFile.outputStream().use { output ->
                     val buffer = ByteArray(65536)
@@ -193,6 +198,10 @@ object IncrementalUpdateManager {
                         val n = input.read(buffer)
                         if (n < 0) break
                         output.write(buffer, 0, n)
+                        written += n
+                        if (expectedSize > 0) {
+                            onProgress((written.toFloat() / expectedSize).coerceIn(0f, 1f))
+                        }
                     }
                 }
             }

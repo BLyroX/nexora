@@ -91,7 +91,7 @@ fun PatchScreen(vm: PatcherViewModel) {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
                                 Text(
-                                    lib.name.removeSuffix(".so").removePrefix("lib"),
+                                    lib.name,
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 Text(
@@ -381,20 +381,24 @@ private fun LibRow(lib: LibInfo, onRefresh: () -> Unit) {
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                lib.name.removeSuffix(".so").removePrefix("lib"),
+                lib.name,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                if (lib.localSize > 0) {
-                    val local = lib.localSize.mb()
-                    val release = lib.releaseSize.mb()
-                    if (lib.upToDate) "$local (up to date)" else "$local → $release"
-                } else "Not installed",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (lib.upToDate) Gray60 else AlertRed,
-            )
+            if (lib.downloading) {
+                AppProgressBar(lib.downloadProgress.coerceAtLeast(0f))
+            } else {
+                Text(
+                    if (lib.localSize > 0) {
+                        val local = lib.localSize.mb()
+                        val release = lib.releaseSize.mb()
+                        if (lib.upToDate) "$local (up to date)" else "$local → $release"
+                    } else "Not installed",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (lib.upToDate) Gray60 else AlertRed,
+                )
+            }
         }
         if (lib.downloading) {
             Icon(

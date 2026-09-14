@@ -78,6 +78,7 @@ data class LibInfo(
     val releaseSize: Long,
     val upToDate: Boolean,
     val downloading: Boolean = false,
+    val downloadProgress: Float = -1f,
 )
 
 sealed interface CompileState {
@@ -116,7 +117,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             loadedBundle = null
             _bundle.value = BundleState.None
         }
-        scanLibs()
+        scanLibs(autoLoad = true)
     }
 
     private val _addons = MutableStateFlow<AddonsState>(AddonsState.None)
@@ -140,10 +141,22 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
                 for (lib in outdated) {
                     val asset = assets.find { it.cleanName == lib.name } ?: continue
-                    IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value)
+                    _libs.value = _libs.value.map {
+                        if (it.name == lib.name) it.copy(downloading = true, downloadProgress = 0f) else it
+                    }
+                    IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value) { p ->
+                        _libs.value = _libs.value.map {
+                            if (it.name == lib.name) it.copy(downloading = true, downloadProgress = p) else it
+                        }
+                    }
+                    _libs.value = _libs.value.map {
+                        if (it.name == lib.name) it.copy(downloading = false, downloadProgress = 1f) else it
+                    }
                 }
+                scanLibs(autoLoad = true)
+            } catch (_: Throwable) {
                 scanLibs()
-            } catch (_: Throwable) { }
+            }
         }
     }
 
@@ -172,7 +185,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         if (!savedOutput.isNullOrEmpty() && File(savedOutput).isDirectory) {
             _outputRoot.value = savedOutput
         }
-        scanLibs()
+        scanLibs(autoLoad = true)
     }
 
     private val _compile = MutableStateFlow<CompileState>(CompileState.Idle)
@@ -301,7 +314,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         _bundle.value = BundleState.Ready("Loaded", b.manifest.entries.size, b.manifest.version)
     }
 
-    fun scanLibs() {
+    fun scanLibs(autoLoad: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val targetDir = File(libsDir, _abi.value)
@@ -312,10 +325,11 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                         ?: emptyMap()
                 } else emptyMap()
 
+                var tagName = "live"
                 var releaseMap: Map<String, Long> = emptyMap()
                 try {
                     val rel = ReleaseRepository.latest(repo)
-                    val tagName = rel.name.ifBlank { rel.tag_name }
+                    tagName = rel.name.ifBlank { rel.tag_name }
                     val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
                     releaseMap = assets.associate { it.cleanName to it.size }
                 } catch (_: Throwable) { }
@@ -332,7 +346,19 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 val outdated = _libs.value.filter { !it.upToDate && it.releaseSize > 0 }
-                if (outdated.isNotEmpty()) _updatePopup.value = outdated
+                if (outdated.isNotEmpty()) {
+                    _updatePopup.value = outdated
+                } else if (autoLoad) {
+                    // Everything on disk is up to date — auto-load the bundle so the
+                    // user can patch straight away.
+                    val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
+                    if (files.isNotEmpty()) {
+                        val b = buildBundleFromFiles(files, _abi.value)
+                        markBundleTagKnown(tagName)
+                        loadedBundle = b
+                        _bundle.value = BundleState.Loaded
+                    }
+                }
             } catch (_: Throwable) {
                 _libs.value = emptyList()
             }
@@ -342,14 +368,18 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshSingleLib(libName: String) {
         viewModelScope.launch(Dispatchers.IO) {
             _libs.value = _libs.value.map {
-                if (it.name == libName) it.copy(downloading = true) else it
+                if (it.name == libName) it.copy(downloading = true, downloadProgress = 0f) else it
             }
             try {
                 val rel = ReleaseRepository.latest(repo)
                 val tagName = rel.name.ifBlank { rel.tag_name }
                 val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
                 val asset = assets.find { it.cleanName == libName } ?: return@launch
-                IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value)
+                IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value) { p ->
+                    _libs.value = _libs.value.map {
+                        if (it.name == libName) it.copy(downloading = true, downloadProgress = p) else it
+                    }
+                }
                 val fileOnDisk = File(File(libsDir, _abi.value), libName)
                 val newSize = if (fileOnDisk.exists()) fileOnDisk.length() else 0L
                 _libs.value = _libs.value.map {
@@ -364,6 +394,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun fetchAndDownloadBundle() {
+        _updatePopup.value = emptyList()
         viewModelScope.launch(Dispatchers.IO) {
             _bundle.value = BundleState.Downloading(0.04f)
             try {
@@ -384,6 +415,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     markBundleTagKnown(rel.tag_name)
                     _bundle.value = BundleState.Loaded
                     loadedBundle = b
+                    scanLibs()
                     return@launch
                 }
 
@@ -391,6 +423,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 IncrementalUpdateManager.downloadChanged(
                     diff.toDownload, libsDir, _abi.value,
                     onFileStart = { index, asset ->
+                        markLibDownloading(asset.cleanName, 0f)
                         _bundle.update {
                             BundleState.Downloading(
                                 percent = 0.15f + (0.75f * index.toFloat() / diff.toDownload.size).coerceAtMost(0.75f),
@@ -402,6 +435,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     },
                     onFileProgress = { index, asset, fileProgress ->
+                        markLibDownloading(asset.cleanName, fileProgress)
                         val base = 0.15f + (0.75f * index.toFloat() / diff.toDownload.size).coerceAtMost(0.75f)
                         val perFileWeight = 0.75f / diff.toDownload.size
                         _bundle.update {
@@ -424,9 +458,16 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     "Updated ${diff.toDownload.size} files", b.manifest.entries.size, b.manifest.version
                 )
                 loadedBundle = b
+                scanLibs()
             } catch (t: Throwable) {
                 _bundle.value = BundleState.DownloadError(t.message ?: "Unknown error")
             }
+        }
+    }
+
+    private fun markLibDownloading(name: String, progress: Float) {
+        _libs.value = _libs.value.map {
+            if (it.name == name) it.copy(downloading = true, downloadProgress = progress) else it
         }
     }
 
