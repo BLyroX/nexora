@@ -251,11 +251,11 @@ void CMenuMain::VidInit( bool connected )
 	quitButton.SetRect( uiStatic.width - 36, 13, 32, 32 );
 
 	console.pos.x = 72;
-	console.pos.y = 180;
+	console.pos.y = 280;
 	console.CalcPosition();
-	multiPlayer.SetCoord( 72, 230 );
-	configuration.SetCoord( 72, 280 );
-	quit.SetCoord( 72, 330 );
+	multiPlayer.SetCoord( 72, 330 );
+	configuration.SetCoord( 72, 380 );
+	quit.SetCoord( 72, 430 );
 }
 
 void CMenuMain::_VidInit()
