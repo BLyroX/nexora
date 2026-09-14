@@ -116,6 +116,37 @@ apply_patch "$PATCHES/amxmodx-cbase-bit32-guard.diff"  "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-ham-trampoline-arm64.patch"  "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-cbase-pev-fallback.patch"     "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-fun-strip-user-weapons.diff"  "$SRC/amxmodx"
+# ARM flush-to-zero: disable FZ bit so denormalized floats (used by pev/set_pev
+# vector round-trip) are preserved instead of being flushed to zero.
+AMXX_FM="$SRC/amxmodx/modules/fakemeta/fakemeta_amxx.cpp"
+if [ -f "$AMXX_FM" ] && ! grep -q "DisableARM_FTZ" "$AMXX_FM"; then
+  awk '
+  /void OnAmxxAttach\(\)/ {
+    print "static void DisableARM_FTZ(void)"
+    print "{"
+    print "#if defined(__aarch64__)"
+    print "\tunsigned long long fpcr;"
+    print "\t__asm__ volatile(\"mrs %0, fpcr\" : \"=r\"(fpcr));"
+    print "\tfpcr &= ~(1ULL << 24);"
+    print "\t__asm__ volatile(\"msr fpcr, %0\" :: \"r\"(fpcr));"
+    print "#elif defined(__arm__)"
+    print "\tunsigned int fpscr;"
+    print "\t__asm__ volatile(\"vmrs %0, fpscr\" : \"=r\"(fpscr));"
+    print "\tfpscr &= ~(1u << 24);"
+    print "\t__asm__ volatile(\"vmsr fpscr, %0\" :: \"r\"(fpscr));"
+    print "#endif"
+    print "}"
+    print ""
+  }
+  /initialze_offsets\(\)/ && !done {
+    print "\tDisableARM_FTZ();"
+    print ""
+    done=1
+  }
+  { print }
+  ' "$AMXX_FM" > "$AMXX_FM.tmp" && mv "$AMXX_FM.tmp" "$AMXX_FM"
+  echo "   patched: ARM FTZ disable"
+fi
 # AMXX module file suffix: "amd64" upstream means "64-bit cells" (applies to
 # every PAWN_CELL_SIZE=64 build, ARM included), but on ARM32 that name reads as
 # an x86-64 binary. Name ARM32 modules "_arm" (arm64 keeps "_amd64" so it also
