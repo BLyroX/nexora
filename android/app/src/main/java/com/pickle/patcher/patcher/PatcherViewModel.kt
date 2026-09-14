@@ -686,13 +686,19 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             if (!silent) _appUpdate.value = AppUpdate.Checking
             try {
-                val tag = ReleaseRepository.latestTagRedirect(APP_RELEASE_REPO)
-                if (tag.isNullOrEmpty()) {
+                // The GitHub /releases/latest endpoint only points at the SINGLE
+                // newest release, which is frequently a `[bundle build]` with no
+                // APK asset. That made the app report "up to date" while an
+                // older APK-bearing release was still pending. Scan the last 15
+                // releases and pick the newest one that actually ships an APK.
+                val rel = ReleaseRepository.latestApkRelease(APP_RELEASE_REPO)
+                if (rel == null) {
                     nextPollAt = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
                     if (!silent) _appUpdate.value = AppUpdate.Failed("Update check failed (network).")
                     else _appUpdate.value = AppUpdate.Idle
                     return@launch
                 }
+                val tag = rel.tag_name
                 val ours = try {
                     getApplication<Application>().packageManager
                         .getPackageInfo(getApplication<Application>().packageName, 0).versionName
@@ -708,26 +714,15 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
 
-                var notes = ""
-                var url = "https://github.com/$APP_RELEASE_REPO/releases/download/$tag/CS16-Meta-Patcher-release.apk"
-                var size = 0L
-                var hasApkAsset = false
+                val notes = rel.body.orEmpty()
+                val apk = rel.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+                val url = apk?.browser_download_url
+                    ?: "https://github.com/$APP_RELEASE_REPO/releases/download/$tag/CS16-Meta-Patcher-release.apk"
+                val size = apk?.size ?: 0L
+                val hasApkAsset = apk != null
                 var commits = emptyList<String>()
-                try {
-                    val rel = ReleaseRepository.latest(APP_RELEASE_REPO)
-                    if (rel.tag_name == tag) {
-                        notes = rel.body.orEmpty()
-                        rel.assets.firstOrNull { it.name.endsWith(".apk") }?.let {
-                            url = it.browser_download_url
-                            size = it.size
-                            hasApkAsset = true
-                        }
-                        if (ours != null && ours.startsWith("v") && ours != tag) {
-                            commits = ReleaseRepository.compareCommits(APP_RELEASE_REPO, ours, tag)
-                        }
-                    }
-                } catch (_: Throwable) {
-                    nextPollAt = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
+                if (ours != null && ours.startsWith("v") && ours != tag) {
+                    commits = ReleaseRepository.compareCommits(APP_RELEASE_REPO, ours, tag)
                 }
 
                 val buildType = parseBuildType(notes, hasApkAsset)

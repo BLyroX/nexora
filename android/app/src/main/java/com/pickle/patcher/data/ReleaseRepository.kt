@@ -117,6 +117,26 @@ object ReleaseRepository {
     }
 
     /**
+     * Fetches up to [perPage] most-recent releases and returns the newest one
+     * that ships an `.apk` (a real APK update). The GitHub `releases/latest`
+     * endpoint only points at the overall newest release, which may be a
+     * bundle-only build with no APK asset — that bug made the app report
+     * "up to date" while an older, APK-bearing release was still pending.
+     */
+    suspend fun latestApkRelease(repo: String, perPage: Int = 15): Release? {
+        val req = Request.Builder()
+            .url("https://api.github.com/repos/$repo/releases?per_page=$perPage")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "cs16-amxx-patcher")
+            .build()
+        return client.newCall(req).execute().use { resp ->
+            if (resp.code != 200) throw IOException("GitHub ${resp.code}: ${resp.message}")
+            val releases = json.decodeFromString<List<Release>>(resp.body?.string().orEmpty())
+            releases.firstOrNull { rel -> rel.assets.any { it.name.endsWith(".apk", ignoreCase = true) } }
+        }
+    }
+
+    /**
      * Fetches commits between two tags using the GitHub compare API.
      * Returns commit messages (first line of each) in reverse chronological order.
      */
