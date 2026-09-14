@@ -90,31 +90,38 @@ static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	mcontext_t *mctx = &((ucontext_t *)ucontext)->uc_mcontext;
 
 #if defined(__aarch64__)
+	// Frame 0 = actual crash PC
+	buffer[count++] = (void *)mctx->regs[32];
+	// Frame 1 = LR of top frame
+	if (mctx->regs[30]) buffer[count++] = (void *)mctx->regs[30];
+	// Then walk the frame chain via x29
 	void **fp = (void **)mctx->regs[29];
-	while (count < maxFrames && fp && !((unsigned long)fp & 0xf)) {
+	int guard = 0;
+	while (count < maxFrames && fp && !((unsigned long)fp & 0xf) && guard++ < 64) {
+		void *prev = (void *)*fp;
 		void *ra = (void *)fp[1];
 		if (!ra) break;
+		if (prev && (unsigned long)prev <= (unsigned long)fp) break;
 		buffer[count++] = ra;
-		void **prev = (void **)*fp;
-		if (prev <= fp) break;
-		fp = prev;
+		if (!prev) break;
+		if (((unsigned long)prev - (unsigned long)fp) > 0x10000) break;
+		fp = (void **)prev;
 	}
-	// Fallback: if FP walking failed, use LR as first frame
-	if (count == 0 && mctx->regs[30])
-		buffer[count++] = (void *)mctx->regs[30];
 #elif defined(__arm__)
+	buffer[count++] = (void *)mctx->arm_pc;
+	if (mctx->arm_lr) buffer[count++] = (void *)mctx->arm_lr;
 	void **fp = (void **)mctx->arm_fp;
-	while (count < maxFrames && fp && !((unsigned long)fp & 0x3)) {
+	int guard = 0;
+	while (count < maxFrames && fp && !((unsigned long)fp & 0x3) && guard++ < 64) {
+		void *prev = (void *)*fp;
 		void *ra = (void *)fp[1];
 		if (!ra) break;
+		if (prev && (unsigned long)prev <= (unsigned long)fp) break;
 		buffer[count++] = ra;
-		void **prev = (void **)*fp;
-		if (prev <= fp) break;
-		fp = prev;
+		if (!prev) break;
+		if (((unsigned long)prev - (unsigned long)fp) > 0x10000) break;
+		fp = (void **)prev;
 	}
-	// Fallback: if FP walking failed, use LR as first frame
-	if (count == 0 && mctx->arm_lr)
-		buffer[count++] = (void *)mctx->arm_lr;
 #else
 	struct BacktraceState { void **cur; void **end; int depth; };
 	auto cb = [](_Unwind_Context *ctx, void *arg) -> _Unwind_Reason_Code {
@@ -411,27 +418,102 @@ static void resolveAddressEnhanced(char *buf, size_t bufSize, void *addr, int lo
 	}
 }
 
+// ─── path helpers ───────────────────────────────────────────────────────────
+
+// Create parent directory of a file path (single level, async-signal-safe).
+// Returns 0 on success, -1 if the path is unusable.
+static int mkdirParent(const char *path) {
+	if (!path || !path[0]) return -1;
+
+	char dir[256];
+	dir[0] = '\0';
+	safeStrcat(dir, path, sizeof(dir));
+
+	int lastSlash = -1;
+	for (int i = 0; dir[i]; i++) {
+		if (dir[i] == '/') lastSlash = i;
+	}
+	if (lastSlash > 0) {
+		dir[lastSlash] = '\0';
+		if (mkdir(dir, 0755) < 0 && errno != EEXIST) return -1;
+	}
+	return 0;
+}
+
+// Strip leading whitespace/control characters that may sneak into gamedir
+// strings (the device showed a folder literally named "\r\ncstrike").
+static const char *skipJunk(const char *s) {
+	if (!s) return "";
+	while (*s && (*s == '\r' || *s == '\n' || *s == ' ' || *s == '\t')) s++;
+	return s;
+}
+
+// Resolve the game directory to a full absolute base path. Probes, in order,
+// the process CWD (engine usually chdirs to its data dir), then the known
+// Android home paths; the first one that actually exists wins.
+static int resolveGameDir(const char *gamedir, char *out, size_t outSize) {
+	out[0] = '\0';
+	const char *gd = skipJunk(gamedir);
+	if (!gd[0]) return -1;
+
+	char cwd[256] = {0};
+
+	// Candidate 1: CWD + gamedir
+	if (getcwd(cwd, sizeof(cwd))) {
+		char cand[256] = {0};
+		safeStrcat(cand, cwd, sizeof(cand));
+		safeStrcat(cand, "/", sizeof(cand));
+		safeStrcat(cand, gd, sizeof(cand));
+
+		struct stat st;
+		if (cand[0] && stat(cand, &st) == 0 && S_ISDIR(st.st_mode)) {
+			safeStrcat(out, cand, outSize);
+			return 0;
+		}
+	}
+
+	// Candidate 2/3: known Android xash homes
+	static const char *homes[] = {
+		"/storage/emulated/0/xash",
+		"/sdcard/xash",
+	};
+	for (size_t i = 0; i < sizeof(homes) / sizeof(homes[0]); i++) {
+		char cand[256] = {0};
+		safeStrcat(cand, homes[i], sizeof(cand));
+		safeStrcat(cand, "/", sizeof(cand));
+		safeStrcat(cand, gd, sizeof(cand));
+
+		struct stat st;
+		if (cand[0] && stat(cand, &st) == 0 && S_ISDIR(st.st_mode)) {
+			safeStrcat(out, cand, outSize);
+			return 0;
+		}
+	}
+
+	// Final fallback: CWD-based even if not verified
+	if (cwd[0]) {
+		safeStrcat(out, cwd, sizeof(outSize));
+		safeStrcat(out, "/", sizeof(outSize));
+		safeStrcat(out, gd, sizeof(outSize));
+		return 0;
+	}
+	return -1;
+}
+
 // ─── crash handler ──────────────────────────────────────────────────────────
 
 static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 	if (s_inCrash) _exit(1);
 	s_inCrash = 1;
 
-	char paths[2][256];
-	int pathCount = 0;
+	if (!s_crashLogPath[0]) _exit(1);
 
-	if (s_crashLogPath[0]) {
-		safeStrcat(paths[pathCount], s_crashLogPath, sizeof(paths[pathCount]));
-		pathCount++;
-	}
-	safeStrcat(paths[pathCount], "/sdcard/Download/crash.log", sizeof(paths[pathCount]));
-	pathCount++;
+	if (mkdirParent(s_crashLogPath) < 0) _exit(1);
 
-	for (int p = 0; p < pathCount; p++) {
-		int fd = open(paths[p], O_WRONLY | O_CREAT | O_APPEND, 0644);
-		if (fd < 0) continue;
+	int fd = open(s_crashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd < 0) _exit(1);
 
-		writeStr(fd, "\n=== CRASH ===\n");
+	writeStr(fd, "\n=== CRASH ===\n");
 
 	writeStr(fd, "Signal: ");
 	writeStr(fd, getSignalName(sig));
@@ -603,7 +685,6 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 
 	writeStr(fd, "=== END CRASH ===\n");
 	close(fd);
-	} // end for each path
 
 	_exit(1);
 }
@@ -612,100 +693,80 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 
 static struct sigaction s_oldHandlers[32];
 
+static int s_headerWritten = 0;
+
 static void CrashHandler_WriteHeader(void) {
-	// Try to write to both game dir and guaranteed accessible path
-	char paths[2][256];
-	int pathCount = 0;
+	if (s_headerWritten) return;
+	if (!s_crashLogPath[0]) return;
 
-	// Game dir path (if SetGameDir was called)
-	if (s_crashLogPath[0]) {
-		safeStrcat(paths[pathCount], s_crashLogPath, sizeof(paths[pathCount]));
-		pathCount++;
-	}
+	// Ensure parent directory exists (only if it looks like a real dir)
+	if (mkdirParent(s_crashLogPath) < 0) return;
 
-	// Guaranteed fallback path
-	safeStrcat(paths[pathCount], "/sdcard/Download/crash.log", sizeof(paths[pathCount]));
-	pathCount++;
+	int fd = open(s_crashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd < 0) return;
 
-	for (int p = 0; p < pathCount; p++) {
-		// Ensure parent directory exists
-		char dir[256];
-		dir[0] = '\0';
-		safeStrcat(dir, paths[p], sizeof(dir));
-		// Find last slash to get directory
-		int lastSlash = -1;
-		for (int i = 0; dir[i]; i++) {
-			if (dir[i] == '/') lastSlash = i;
-		}
-		if (lastSlash > 0) {
-			dir[lastSlash] = '\0';
-			mkdir(dir, 0755);
-		}
-
-		int fd = open(paths[p], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-		if (fd < 0) continue;
-
-		writeStr(fd, "=== CS16Client INIT ===\n");
-
-		// Date/time
-		{
-			time_t now = time(NULL);
-			struct tm tm_buf;
-			localtime_r(&now, &tm_buf);
-			char dt[64];
-			strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", &tm_buf);
-			writeStr(fd, "Time: "); writeStr(fd, dt); writeStr(fd, "\n");
-		}
-
-		// Device info
-		{
-			char prop[256];
-			writeStr(fd, "\n--- Device ---\n");
-			if (__system_property_get("ro.product.brand", prop) > 0) {
-				writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.product.model", prop) > 0) {
-				writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.product.device", prop) > 0) {
-				writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.product.board", prop) > 0) {
-				writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.hardware.chipname", prop) > 0) {
-				writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
-			} else if (__system_property_get("ro.hardware", prop) > 0) {
-				writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
-				writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-			} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
-				writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.build.version.release", prop) > 0) {
-				writeStr(fd, "Android: "); writeStr(fd, prop);
-				if (__system_property_get("ro.build.version.sdk", prop) > 0) {
-					writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
-				}
-				writeStr(fd, "\n");
-			}
-			if (__system_property_get("ro.build.display.id", prop) > 0) {
-				writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
-			}
-		}
-
-		// Versions
-		if (s_engineVersion[0]) {
-			writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
-		}
-		if (s_patcherVersion[0]) {
-			writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
-		}
-
-		writeStr(fd, "\n--- Running (no crash) ---\n");
+	if (writeStr(fd, "=== CS16Client INIT ===\n") < 0) {
 		close(fd);
+		return;
 	}
+	s_headerWritten = 1;
+
+	// Date/time
+	{
+		time_t now = time(NULL);
+		char dt[64];
+		int n = strftime(dt, sizeof(dt), "%Y-%m-%d %H:%M:%S", localtime(&now));
+		writeStr(fd, "Time: "); if (n) write(fd, dt, n); writeStr(fd, "\n");
+	}
+
+	// Device info
+	{
+		char prop[256];
+		writeStr(fd, "\n--- Device ---\n");
+		if (__system_property_get("ro.product.brand", prop) > 0) {
+			writeStr(fd, "Brand: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.model", prop) > 0) {
+			writeStr(fd, "Model: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.device", prop) > 0) {
+			writeStr(fd, "Device: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.board", prop) > 0) {
+			writeStr(fd, "Board: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.hardware.chipname", prop) > 0) {
+			writeStr(fd, "SoC: "); writeStr(fd, prop); writeStr(fd, "\n");
+		} else if (__system_property_get("ro.hardware", prop) > 0) {
+			writeStr(fd, "Hardware: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.product.cpu.abilist", prop) > 0) {
+			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+		} else if (__system_property_get("ro.product.cpu.abi", prop) > 0) {
+			writeStr(fd, "CPU ABI: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.build.version.release", prop) > 0) {
+			writeStr(fd, "Android: "); writeStr(fd, prop);
+			if (__system_property_get("ro.build.version.sdk", prop) > 0) {
+				writeStr(fd, " (SDK "); writeStr(fd, prop); writeStr(fd, ")");
+			}
+			writeStr(fd, "\n");
+		}
+		if (__system_property_get("ro.build.display.id", prop) > 0) {
+			writeStr(fd, "Build: "); writeStr(fd, prop); writeStr(fd, "\n");
+		}
+	}
+
+	// Versions
+	if (s_engineVersion[0]) {
+		writeStr(fd, "Engine: "); writeStr(fd, s_engineVersion); writeStr(fd, "\n");
+	}
+	if (s_patcherVersion[0]) {
+		writeStr(fd, "Patcher: "); writeStr(fd, s_patcherVersion); writeStr(fd, "\n");
+	}
+
+	writeStr(fd, "\n--- Running (no crash) ---\n");
+	close(fd);
 }
 
 void CrashHandler_Init(void) {
@@ -732,19 +793,16 @@ void CrashHandler_Install(void) {
 	for (int i = 0; i < 5; i++) {
 		sigaction(sigs[i], &sa, &s_oldHandlers[sigs[i]]);
 	}
-
-	// Write init header to crash.log so we know handler is active
-	CrashHandler_WriteHeader();
 }
 
 void CrashHandler_SetGameDir(const char *gamedir) {
 	s_crashLogPath[0] = '\0';
-	if (gamedir && gamedir[0]) {
-		safeStrcat(s_crashLogPath, gamedir, sizeof(s_crashLogPath));
+	if (resolveGameDir(gamedir, s_crashLogPath, sizeof(s_crashLogPath)) == 0) {
 		safeStrcat(s_crashLogPath, "/crash.log", sizeof(s_crashLogPath));
-	} else {
-		safeStrcat(s_crashLogPath, "/sdcard/cs16client/crash.log", sizeof(s_crashLogPath));
 	}
+
+	// Write the header once we know the final path
+	CrashHandler_WriteHeader();
 }
 
 void CrashHandler_SetEngineVersion(const char *ver) {

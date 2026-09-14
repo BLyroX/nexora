@@ -308,6 +308,10 @@ redraw the HUD.
 
 int DLLEXPORT HUD_Redraw( float time, int intermission )
 {
+	// Per-frame re-install: engine/libs may overwrite our signal handlers
+	// after HUD_Init; keep them armed until the very crash.
+	CrashHandler_Install();
+
 	gHUD.Redraw( time, intermission );
 
 	return 1;
