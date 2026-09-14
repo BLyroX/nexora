@@ -308,9 +308,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val localFiles = if (targetDir.isDirectory) {
                     targetDir.listFiles()
                         ?.filter { it.name.endsWith(".so") && !it.name.startsWith("libmenu_") }
-                        ?.associate {
-                            it.name.removePrefix("lib") to it.length()
-                        }
+                        ?.associate { it.name to it.length() }
                         ?: emptyMap()
                 } else emptyMap()
 
