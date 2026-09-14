@@ -95,6 +95,7 @@ apply_patch() {
 }
 
 apply_patch "$PATCHES/amxmodx-pawncc-64bit.patch"        "$SRC/amxmodx"
+apply_patch "$PATCHES/amxmodx-pawncc-64bit-literalpool.patch" "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-libpawnc-console.patch"      "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-android-load-CModule.patch" "$SRC/amxmodx"
 apply_patch "$PATCHES/amxmodx-android-load-modules.patch" "$SRC/amxmodx"
