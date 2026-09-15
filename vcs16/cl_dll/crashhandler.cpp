@@ -702,7 +702,9 @@ static void CrashHandler_WriteHeader(void) {
 	// Ensure parent directory exists (only if it looks like a real dir)
 	if (mkdirParent(s_crashLogPath) < 0) return;
 
-	int fd = open(s_crashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	// If a crash.log already exists from a previous run, wipe it
+	// and write a fresh INIT header.
+	int fd = open(s_crashLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) return;
 
 	if (writeStr(fd, "=== CS16Client INIT ===\n") < 0) {
