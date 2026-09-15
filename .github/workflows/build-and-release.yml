@@ -225,7 +225,11 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_MSG=$(echo '${{ steps.build_type.outputs.commit_msg }}' | head -c 500)
-          APK_COUNT=$(ls android/app/build/outputs/apk/release/*.apk 2>/dev/null | wc -l)
+          if compgen -G "android/app/build/outputs/apk/release/*.apk" >/dev/null; then
+            APK_COUNT=$(ls android/app/build/outputs/apk/release/*.apk | wc -l)
+          else
+            APK_COUNT=0
+          fi
           APK_FIELD=""
           if [ "$APK_COUNT" -gt 0 ]; then
             APK_URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/nexora_v${VERSION}.apk"
@@ -248,4 +252,4 @@ jobs:
           EOF
           )
           curl -fsSL -H "Content-Type: application/json" \
-            -d "$BODY" "$DISCORD_WEBHOOK" >/dev/null || echo "Failed to send Discord webhook"
+            -d "$BODY" "$DISCORD_WEBHOOK" 2>&1 >/dev/null || { echo "Failed to send Discord webhook (exit=$?)"; exit 0; }
