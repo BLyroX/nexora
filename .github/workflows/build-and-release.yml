@@ -237,12 +237,12 @@ jobs:
             TYPE_FIELD="App + libs"
             APK_URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/nexora_v${VERSION}.apk"
             APK_FIELD=", { \"name\": \"Download\", \"value\": \"[nexora_v${VERSION}.apk](${APK_URL})\", \"inline\": true }"
-else
-          TITLE="Nexora v${VERSION} libs & plugins update"
-          STATUS_FIELD=":white_check_mark: Libs & plugins updated"
-          TYPE_FIELD="Bundle only (no APK)"
-          APK_FIELD=""
-        fi
+          else
+            TITLE="Nexora v${VERSION} libs & plugins update"
+            STATUS_FIELD=":white_check_mark: Libs & plugins updated"
+            TYPE_FIELD="Bundle only (no APK)"
+            APK_FIELD=""
+          fi
           BODY=$(cat <<EOF
           {
             "embeds": [{
