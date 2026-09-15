@@ -1,48 +1,52 @@
 # Nexora
 
-**Nexora** re-packs the **CS 1.6 (Xash3D) Android** client APK so it ships **AMX Mod X**
-with **Metamod-P** and a full plugin bundle embedded — one tap, no server-side AMXX setup.
-The patched APK is re-signed and installable directly.
+**Nexora**, Android'deki **CS 1.6** istemci uygulamasına, uygulamayı yeniden kurmadan
+**AMX Mod X** ve **eklentileri** yerleştiren bir araçtır. Uygulamayı seç, **Patch**'e bas,
+yeni APK'yı yükle — oyunun içinde AMXX çalışmaya başlar.
 
-Only **arm64-v8a (64-bit)** is supported.
+## Nasıl çalışır
 
-## Patch
+1. **Patch** — Cihazındaki CS 1.6 istemci `.apk`'sını seç. Nexora, içine AMXX çekirdeğini,
+   Metamod-P'yi ve eklenti paketlerini ekler, yeniden imzalar ve hazır APK'yı üretir.
+2. **Install** — Üretilen APK'yı doğrudan yükle. Uygulama kimliği ve imza korunduğu için
+   mevcut hesap/oyun verilerin silinmez.
+3. **Compile** — `addons/amxmodx/scripting/` klasörüne `.sma` kaynak kodu koyduysan,
+   Nexora onları .amxx eklentisine derler ve bir sonraki Patch'e dahil eder.
+4. **Addons** — Tüm AMXX paketi uygulamanın içine gömülüdür; internet olmadan da çalışır.
 
-1. Pick the **source APK** — the CS 1.6 client `.apk` you downloaded or keep around.
-2. Nexora injects **AMXX + Metamod-P + addons**, re-signs, and emits a new APK.
-3. **Install** updates the app in place (application id + signature stay the same, your data is kept).
+## Kurulum
 
-## Compile (plugins)
+- İndir: **Releases** sayfasından son `Nexora-*.apk`'yı indir.
+- Yükle: "Bilinmeyen kaynaklar" iznini ver ve APK'yı kur.
+- Uygulamayı aç, **Patch** sekmesinden cihazındaki CS 1.6 APK'sını seç.
 
-- Nexora embeds a **64-bit-cell compiler (pawncc)**.
-- In **Compile** pick an `.sma` source file → it is built to `.amxx` (native 64-cell binary)
-  → added to the **Addons** bundle → applied on the next **Patch**.
-- 32-bit-cell `.amxx` plugins are intentionally rejected with a clear error.
+## Gereksinimler
 
-## Addons (bundle)
+- Cihaz **arm64 (64-bit)** desteklemeli (2015 sonrası Android telefonların tamamı).
+- Android 8.0+ (API 26+).
+- Kaynak CS 1.6 istemci APK'sı (Google Play / APKMirror / kendi yedeğin).
 
-- The app (and CI) packages AMXX modules, metamod, the compiler and sample plugins into a
-  **bundle** zip; it is embedded in the APK so it works **offline**.
-- The **Addons** tab lists the bundle contents (core, modules, plugins) and fetches the latest
-  release from the internet or falls back to the embedded copy.
+## Build (geliştiriciler için)
 
-## Repository layout
+CI, `.github/workflows/` altında:
+1. AMXX'ı **64-cell hücre** yapısıyla ve Metamod-P ile çapraz derler,
+2. eklenti derleyicisini (pawncc) ve örnek `.sma` → `.amxx` derlemelerini paketler,
+3. patcher APK'sını kurup imzalar.
 
-- `android/app/` — the patcher APK (Jetpack Compose: Patch · Compile · Addons).
-- `android/ci/` — build scripts: AMXX (64-cell) + pawncc + metamod + bundle assembly.
-- `patches/` — the ordered 64-bit patch set applied on top of upstream AMXX/pawncc/metamod.
-- `android/hlsdk/` — Half-Life SDK headers required by the AMXX build.
-
-## CI / building
-
-`.github/workflows/` first cross-compiles AMXX 64-cell (core + modules + host pawncc), packs the
-bundle, then assembles + signs the patcher APK. Locally:
+Yerel derleme:
 
 ```sh
 bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 ```
 
-## Status
+## Sorun giderme
 
-- On-device runtime validation of a fully patched APK: pending.
-- User changes under `addons/` are overwritten on the next repatch.
+- **"assert(litidx==0)" hatası** — Nexora, çok sayıda dize içeren eklentilerin 64-cell
+  ortamda derlenmesini güvenli hale getiren bir düzeltme içerir. Plugin derlemesi sırasında
+  bu hatayı görürsen Nexora güncel olduğundan emin ol.
+- **32-bit eklenti uyarısı** — 64-cell ortamda 32-bit `.amxx` dosyaları çalışmaz;
+  eklentiyi kaynaktan (`.sma`) yeniden derle.
+
+## Katkı
+
+PR'ler ve fikirler açık. Lütfen değişikliklerini açıklayan bir özetle gel.
