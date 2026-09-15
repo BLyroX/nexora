@@ -187,6 +187,18 @@ jobs:
           APP_VERSION_NAME: ${{ github.ref_name }}
         run: ./gradlew --no-daemon :app:assembleRelease --stacktrace
 
+      - name: Rename APK to nexora_vX.X.X.apk
+        if: steps.build_type.outputs.needs_apk == 'true'
+        shell: bash
+        run: |
+          cd android/app/build/outputs/apk/release
+          APK=$(ls *.apk 2>/dev/null | head -1)
+          if [ -n "$APK" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            mv "$APK" "nexora_v${VERSION}.apk"
+            echo "Renamed: nexora_v${VERSION}.apk"
+          fi
+
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
