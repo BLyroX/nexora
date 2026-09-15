@@ -1,84 +1,53 @@
-# Vertex — 64-bit cell AMXX toolchain for CS16 Android
+# Nexora
 
-Repacks the **Nexora (Xash3D)** Android APK to bundle **AMX Mod X** (64-bit-cell build),
-**Metamod-P** and a full addons layout, then re-signs it. No AMXX server-side install needed;
-the patched APK is self-contained.
+**Nexora** repacks the CS1.6 Android client APK so it bundles **AMX Mod X** compiled for
+**64-bit cells** (`PAWN_CELL_SIZE=64`, ABI `arm64-v8a` only), then re-signs it. No server-side
+AMXX install is needed — the patched APK is self-contained and runnable on any aarch64 Android
+device.
 
-Only **arm64-v8a** (`aarch64`) is supported — this is the platform Xash3D uses on Android and the
-only ABI the ported metamod/AMXX targets. arm32/x86 are out of scope by design.
+It is a *companion/cell-sized* sibling of the generic 64-bit AMXXX builds: the core difference is
+that here the literal pool is sized for 64-bit cells, so a plugin uses twice the bytes the same
+plugin would use on a 32-bit cell build.
 
 ## Why 64-bit cells
 
-Official AMXX ships **32-bit cells** (`PAWN_CELL_SIZE=32`). On aarch64 a pointer is 8 bytes and
-does not fit in a 4-byte cell: `amx_BrowseRelocate` stores relocated function pointers into code
-cells, so `sizeof(cell)` must equal `sizeof(void*)`. Everything here therefore builds with
-**64-bit cells**: core, every module, the compiler and all shipped plugins. 32-bit `.amxx` files
-are rejected cleanly at load time.
+AMX's cell is `sizeof(cell)` bytes wide — 4 on standard pawn32, **8 on this build**. A pointer
+(stored in a cell) needs all 8 bytes on arm64, so every cell-related macro and the literal queue
+are resized for 64. A 32-cell `.amxx` plugin is rejected by the 64-core at load time, which is why
+the shipped plugins and the CI compiler are also 64-cell.
 
-## Repository layout
+## What happens
 
+The CI ([`android/ci/build-amxx.sh`](android/ci/build-amxx.sh), [workflow](.github/workflows)):
+
+1. Clones upstream `alliedmodders/amxmodx` master and applies [`patches/`](patches/) **in order**
+   (mostly 64-bit-cell adaptations: CDetour cell casts, AMTL 64-bit, pawncc literal pool, Android
+   metamod/AMXX loading, floats, pcvar handles, param convert, cbase/pev, and the HAM trampoline
+   on arm64).
+2. Cross-compiles with the NDK: AMXX core + modules + metamod-p + the **host compiler** `pawncc`
+   (also PAWN_CELL_SIZE=64 so it can compile plugin-heavy `.sma` without aborting on the literal
+   queue assert).
+3. Compiles sample plugins from `.sma` → `.amxx` with that compiler.
+4. Packs everything into release artifacts and uploads them; the Android patcher APK embeds them
+   so the app works even offline.
+
+## Layout
+
+- `patches/` — the ordered patch set CI applies to upstream amxmodx / metamod / pawncc.
+- `android/ci/` — the shell build scripts run by the workflow.
+- `android/app/` — the patcher APK (Compose UI pick→patch→re-sign).
+- `patches/*.patch` files whose names start with `amxmodx-` are applied to the `amxmodx` source;
+   `amxmodx-pawncc-64bit.patch` etc. adapt the compiler.
+
+## Building locally
+
+Requires the Android NDK and a GH token only for the release step; a normal build is:
+
+```sh
+bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 ```
-android/
-  app/                  patcher APK (Jetpack Compose UI, pick+patch+sign flow)
-  app/src/main/assets/  embedded bundle.zip (offline fallback, populated by CI)
-  patcherlib/           pure-JVM patching core: bundle manifest, ZipRepacker,
-                        apksig signing, CLI
-  ci/
-    build-amxx.sh       fetches upstream AMXX master + applies patches/,
-                        cross-compiles core/modules/metamod/pcre/pawncc (NDK)
-    gen-bundle.py       packs build output into release bundles (bundle.json)
-  hlsdk/                vendored Half-Life SDK headers the AMXX build needs
-  plugins-src/          sample .sma compiled during the AMXX build
-  debug/                keystore used to re-sign patched APKs
-patches/                in-order patches applied on top of upstream AMXX master
-  amxmodx-CDetour-cell.diff     CDetour cell typedef (cell_t32/cell_t64)
-  amxmodx-64bit-cell-casts.diff explicit cell casts in file.cpp
-  amxmodx-memtools-dlfcn.diff   dlfcn.h include for MemoryUtils on Linux
-  amxmodx-amtl-64bit.diff       two-argument Min/Max in amtl (submodule)
-  amxmodx-pawncc-64bit.patch    amxxpc.cpp Compile64 + sc1.c BinReloc drop
-  amxmodx-android-load-CModule.patch  Android module loader (dlopen)
-  amxmodx-android-load-modules.patch  modules.cpp Linux dlopen path
-  metamod-p-aarch64.patch       port of metamod-p to aarch64 Android
-```
 
-The `amxx-addons` branch holds the shipped addons tree (configs, gamedata, stock plugins) — the
-CI checks it out and folds it into the bundle.
+## Status
 
-## What a patched APK contains
-
-The bundle manifest (`bundle.json`) drives the patcher:
-
-- `lib/arm64-v8a/libamxmodx.so`, `libmetamod.so`, 11 module libraries
-  (`lib<cstrike|csx|engine|fakemeta|fun|geoip|json|nvault|regex|sockets|sqlite>_amxx_amd64.so`,
-  or `_amxx_arm.so` on the arm32/armeabi-v7a bundle; the suffix is the module's
-  "64-bit cells" tag on LP64 ABIs, and `_arm` on ARM32) —
-  written **STORED** and **16 KB-aligned** (Android 15+ / 16 KB-page devices).
-- `addons/**` — full AMXX config tree (configs, gamedata, plugins) written DEFLATED, so the game
-  loadout appears out of the box without manual file installs.
-
-The patcher prunes only those exact 13 libraries plus `META-INF/` from the picked APK and re-signs
-it with the bundled debug keystore. All other entries (engine `libxash*.so`, resources, assets)
-are copied through untouched and re-compressed per their original method.
-
-## Building (CI)
-
-`.github/workflows/build-and-release.yml`:
-1. `build-amxx` — clone upstream `alliedmodders/amxmodx` master (with the `public/amtl` submodule),
-   apply `patch -p1` in order, compile with NDK r25c: AMXX core + 11 modules, metamod-p aarch64,
-   static pcre, and a host `pawncc` (64-bit) used to compile `.amxx` plugins from `.sma`.
-2. `amxx-bundle` — `gen-bundle.py` produces `amxx-bundle.zip` (libraries + addons + bundle.json),
-   `amxx-plugins.zip`, `amxx-addons.zip`; uploaded as a GitHub release (`amxx-bundle*.zip`).
-3. `app-apk` — embeds `amxx-bundle.zip` into the app assets (offline fallback) and assembles +
-   signs the patcher APK.
-
-`PatcherViewModel` fetches the newest release bundle at runtime; if online download fails the
-embedded bundle is used, so patching always works.
-
-## Known issues / status
-
-- Local builds are verified through the full native build; the Android patcher and release
-  artifacts are exercised in CI. **On-device runtime validation is still pending**.
-- Only the `addons/metamod` + `addons/amxmodx` configs shipped on the `amxx-addons` branch are
-  injected; user modifications made inside an already-patched APK may be overwritten on repatch.
-- 32-bit `.amxx` plugins are intentionally rejected by the 64-bit core.
-- arm32/x86 APKs are refused by the patcher with a clear error.
+On-device runtime validation (the patched APK actually running an AMXX plugin) is still pending;
+compile and packaging are exercised in CI.
