@@ -23,7 +23,7 @@ app twice. Pick the APK, hit **Patch**, install the output — done.
 
 ## Requirements
 
-- **arm64 (64-bit)** device — every Android phone from 2015 onward.
+- **arm64 (64-bit) / armv7a (32-bit)** device
 - Android 8.0+ (API 26).
 - A CS 1.6 client APK (Google Play, APKMirror, or your own backup).
 
