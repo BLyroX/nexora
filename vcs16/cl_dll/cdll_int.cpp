@@ -254,6 +254,10 @@ bool isLoaded = false;
 
 int DLLEXPORT HUD_VidInit( void )
 {
+	// Re-arm crash handler: engine/other libs may have swapped our signal
+	// handlers during video/game init.
+	CrashHandler_Install();
+
 	gHUD.VidInit();
 
 	isLoaded = true;

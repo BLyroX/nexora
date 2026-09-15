@@ -15,6 +15,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 
 #include "crashhandler.h"
 
@@ -84,6 +85,18 @@ static int writeStr(int fd, const char *s) {
 // the frame chain. This works even inside signal handlers where inline asm
 // would only see the handler's own stack frames.
 
+// Async-signal-safe probe: is `addr` safe to read 2*sizeof(void*) bytes from?
+// Uses the process_vm_readv syscall, which faults without raising SIGSEGV, so
+// a garbage frame pointer can never crash the handler mid-backtrace and leave
+// a truncated crash.log.
+static int isMapped_ro(unsigned long addr) {
+	if (addr < 0x10000) return 0;
+	unsigned long dummy = 0;
+	struct iovec local = { &dummy, sizeof(dummy) };
+	struct iovec remote = { (void *)addr, sizeof(dummy) };
+	return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)sizeof(dummy);
+}
+
 static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	int count = 0;
 	if (!ucontext) return 0;
@@ -98,6 +111,7 @@ static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	void **fp = (void **)mctx->regs[29];
 	int guard = 0;
 	while (count < maxFrames && fp && !((unsigned long)fp & 0xf) && guard++ < 64) {
+		if (!isMapped_ro((unsigned long)fp)) break;
 		void *prev = (void *)*fp;
 		void *ra = (void *)fp[1];
 		if (!ra) break;
@@ -113,6 +127,7 @@ static int getBacktrace(void **buffer, int maxFrames, void *ucontext) {
 	void **fp = (void **)mctx->arm_fp;
 	int guard = 0;
 	while (count < maxFrames && fp && !((unsigned long)fp & 0x3) && guard++ < 64) {
+		if (!isMapped_ro((unsigned long)fp)) break;
 		void *prev = (void *)*fp;
 		void *ra = (void *)fp[1];
 		if (!ra) break;
@@ -492,9 +507,9 @@ static int resolveGameDir(const char *gamedir, char *out, size_t outSize) {
 
 	// Final fallback: CWD-based even if not verified
 	if (cwd[0]) {
-		safeStrcat(out, cwd, sizeof(outSize));
-		safeStrcat(out, "/", sizeof(outSize));
-		safeStrcat(out, gd, sizeof(outSize));
+		safeStrcat(out, cwd, outSize);
+		safeStrcat(out, "/", outSize);
+		safeStrcat(out, gd, outSize);
 		return 0;
 	}
 	return -1;
@@ -693,25 +708,31 @@ static void crashHandler(int sig, siginfo_t *info, void *ucontext) {
 
 static struct sigaction s_oldHandlers[32];
 
-static int s_headerWritten = 0;
+static char s_headerPath[256] = {0};
 
 static void CrashHandler_WriteHeader(void) {
-	if (s_headerWritten) return;
 	if (!s_crashLogPath[0]) return;
+
+	// Only (re)initialize when the target path changed (new process run or
+	// gamedir switch). Deleting the existing file first guarantees crash.log
+	// always starts brand-new — stale INIT blocks from older builds or
+	// previous runs can never accumulate on top of each other.
+	if (s_headerPath[0] && strcmp(s_headerPath, s_crashLogPath) == 0) return;
 
 	// Ensure parent directory exists (only if it looks like a real dir)
 	if (mkdirParent(s_crashLogPath) < 0) return;
 
-	// If a crash.log already exists from a previous run, wipe it
-	// and write a fresh INIT header.
+	unlink(s_crashLogPath);
 	int fd = open(s_crashLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) return;
+
+	s_headerPath[0] = '\0';
+	safeStrcat(s_headerPath, s_crashLogPath, sizeof(s_headerPath));
 
 	if (writeStr(fd, "=== CS16Client INIT ===\n") < 0) {
 		close(fd);
 		return;
 	}
-	s_headerWritten = 1;
 
 	// Date/time
 	{
