@@ -1,52 +1,48 @@
 # Nexora
 
-Nexora, Android'de **CS1.6 (Xash3D)** client APK'sını tek dokunuşla AMX Mod X'li hale
-getiren bir **patcher uygulaması**. AMXX çekirdeği + Metamod-P + eklenti paketi APK'nın
-**içine gömülü** olarak gelir — sunucuda AMXX kurman gerekmez. Uygulama paketler, imzalar
-ve sonucu doğrudan yükleyebilir.
+**Nexora** re-packs the **CS 1.6 (Xash3D) Android** client APK so it ships **AMX Mod X**
+with **Metamod-P** and a full plugin bundle embedded — one tap, no server-side AMXX setup.
+The patched APK is re-signed and installable directly.
 
-Yalnızca **arm64-v8a (64-bit)** desteklenir.
+Only **arm64-v8a (64-bit)** is supported.
 
-## Patch (Ana Sekme)
+## Patch
 
-1. **Kaynak APK'yı seç** — depondan indirdiğin/istediğin CS1.6 client `.apk`'sını aç.
-2. Nexora, içindeki tipik oyun dosyalarını okur, **AMXX + Metamod-P + eklentileri** ekler,
-   yeniden imzalar ve yeni APK'yı üretir.
-3. **Kur** butonuyla doğrudan aynı uygulama olarak günceller (uygulama kimliği/imza aynı
-   kalır, verilerin korunur).
+1. Pick the **source APK** — the CS 1.6 client `.apk` you downloaded or keep around.
+2. Nexora injects **AMXX + Metamod-P + addons**, re-signs, and emits a new APK.
+3. **Install** updates the app in place (application id + signature stay the same, your data is kept).
 
-## Compile (Eklenti Derle)
+## Compile (plugins)
 
-- Nexora'nın içinde **64-bit cell derleyici (pawncc)** gömülüdür.
-- `Compile` sekmesinde bir `.sma` kaynak dosyası seç → Nexora onu `.amxx` (native 64-cell
-  binary) yapar → `Addons` paketine ekler → sonraki Patch'te otomatik gelir.
-- 32-bit cell `.amxx` yüklemeleri derleme/kurulumda bilinçli reddedilir; uyumsuzluk
-  uyarısı verilir.
+- Nexora embeds a **64-bit-cell compiler (pawncc)**.
+- In **Compile** pick an `.sma` source file → it is built to `.amxx` (native 64-cell binary)
+  → added to the **Addons** bundle → applied on the next **Patch**.
+- 32-bit-cell `.amxx` plugins are intentionally rejected with a clear error.
 
-## Addons (Mod Paketi / Bundle)
+## Addons (bundle)
 
-- Uygulama + CI, **bundle** adı verilen zip içinde AMXX modülleri, metamod, derleyici ve
-  örnek eklentileri paketler; APK'ya gömülü olduğundan **çevrimdışı** da çalışır.
-- `Addons` sekmesinde paketin içeriğini (çekirdek, modüller, plugin listesi) görür,
-  internetten güncel sürümü çekebilir ya da gömülü olanı kullanırsın.
+- The app (and CI) packages AMXX modules, metamod, the compiler and sample plugins into a
+  **bundle** zip; it is embedded in the APK so it works **offline**.
+- The **Addons** tab lists the bundle contents (core, modules, plugins) and fetches the latest
+  release from the internet or falls back to the embedded copy.
 
-## Repository Layout
+## Repository layout
 
-- `android/app/` — patcher APK (Jetpack Compose: Patch · Compile · Addons).
-- `android/ci/` — build script'leri: AMXX (64-cell) + pawncc + metamod + bundle paketleme.
-- `patches/` — upstream AMXX/pawncc/metamod'a uygulanan sıralı 64-bit patch seti.
-- `android/hlsdk/` — AMXX derlemesi için gerekli SDK başlıkları.
+- `android/app/` — the patcher APK (Jetpack Compose: Patch · Compile · Addons).
+- `android/ci/` — build scripts: AMXX (64-cell) + pawncc + metamod + bundle assembly.
+- `patches/` — the ordered 64-bit patch set applied on top of upstream AMXX/pawncc/metamod.
+- `android/hlsdk/` — Half-Life SDK headers required by the AMXX build.
 
-## CI / Yapı
+## CI / building
 
-`.github/workflows/` dev/alanlarında önce AMXX 64-cell çekirdek+modüller+host pawncc
-çapraz derler, bundle'ı paketler, sonra patcher APK'yı kurar+imzalar. Yerel:
+`.github/workflows/` first cross-compiles AMXX 64-cell (core + modules + host pawncc), packs the
+bundle, then assembles + signs the patcher APK. Locally:
 
 ```sh
 bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 ```
 
-## Durum / İyileştirmeye Açık
+## Status
 
-- On-cihaz çalışma doğrulaması: bekliyor.
-- Kullanıcının `addons/` altında yaptığı değişiklikler sonraki repatch'te üzerine yazılır.
+- On-device runtime validation of a fully patched APK: pending.
+- User changes under `addons/` are overwritten on the next repatch.
