@@ -1,5 +1,5 @@
-From: CS16Client CI
-Subject: [PATCH] pawncc/libpc300 sc1.c: make newfunc literal-queue guard safe on both 32-bit and 64-bit cells
+From: Nexora CI
+Subject: [Nexora] pawncc/libpc300 sc1.c: make newfunc literal-queue guard safe on both 32-bit and 64-bit cells
 
 On PAWN_CELL_SIZE==64 (AMXX 64-bit cell builds) the strict "assert(litidx==0)"
 in newfunc() used to abort compilation of literal-heavy plugins with

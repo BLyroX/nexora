@@ -1,6 +1,6 @@
 # Vertex — 64-bit cell AMXX toolchain for CS16 Android
 
-Repacks the **CS16Client (Xash3D)** Android APK to bundle **AMX Mod X** (64-bit-cell build),
+Repacks the **Nexora (Xash3D)** Android APK to bundle **AMX Mod X** (64-bit-cell build),
 **Metamod-P** and a full addons layout, then re-signs it. No AMXX server-side install needed;
 the patched APK is self-contained.
 
