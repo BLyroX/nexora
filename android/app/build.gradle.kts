@@ -16,7 +16,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.pickle.patcher"
+        applicationId = "com.nexora"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
