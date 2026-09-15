@@ -39,13 +39,3 @@ Local build:
 ```sh
 bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 ```
-
-## Troubleshooting
-
-- **`assert(litidx==0)` on compile** — Nexora ships a guard so plugins with large
-  string pools compile safely on 64-cell. If you still hit it, make sure you're on
-  the latest Nexora.
-- **32-bit plugin won't load** — a 32-bit `.amxx` cannot run on 64-cell. Recompile
-  the plugin from its `.sma` source.
-- **Patch fails / APK not detected** — re-download the app's APK and make sure it's
-  actually signed CS 1.6 release, not a debug build.
