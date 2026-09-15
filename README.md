@@ -1,57 +1,52 @@
 # Nexora
 
-**Nexora** repacks the **CS1.6 Android client (Xash3D)** APK so the patched app bundles
-**AMX Mod X (actı 64-bit hücre)** + **Metamod-P** + the AMXX addons, then re-signs it.
-No server-side AMXX install is needed — the patched APK is self-contained.
+Nexora, Android'de **CS1.6 (Xash3D)** client APK'sını tek dokunuşla AMX Mod X'li hale
+getiren bir **patcher uygulaması**. AMXX çekirdeği + Metamod-P + eklenti paketi APK'nın
+**içine gömülü** olarak gelir — sunucuda AMXX kurman gerekmez. Uygulama paketler, imzalar
+ve sonucu doğrudan yükleyebilir.
 
-Only **arm64-v8a** builds are supported (that's the ABI Xash3D ships on Android); arm32/x86
-APKs are rejected with a clear error.
+Yalnızca **arm64-v8a (64-bit)** desteklenir.
 
-## Why 64-bit cells?
+## Patch (Ana Sekme)
 
-AMX's cell on this Android build is **64 bits** (`PAWN_CELL_SIZE=64`), so a pointer fits in
-one cell. Everything here — compiler, AMXX core, metamod, every module, and the `pawncc`
-host compiler — is built with 64-bit cells maturely patched for literal-heavy plugins
-(literal pool sized/flushed cell-aware, so compiling `.sma` with many const-strings no longer
-aborts with `assert(litidx==0)` on the 64-cell path). 32-bit-cell `.amxx` plugins are rejected
-at load time.
+1. **Kaynak APK'yı seç** — depondan indirdiğin/istediğin CS1.6 client `.apk`'sını aç.
+2. Nexora, içindeki tipik oyun dosyalarını okur, **AMXX + Metamod-P + eklentileri** ekler,
+   yeniden imzalar ve yeni APK'yı üretir.
+3. **Kur** butonuyla doğrudan aynı uygulama olarak günceller (uygulama kimliği/imza aynı
+   kalır, verilerin korunur).
 
-## How the build works (CI)
+## Compile (Eklenti Derle)
 
-`.github/workflows/…`:
+- Nexora'nın içinde **64-bit cell derleyici (pawncc)** gömülüdür.
+- `Compile` sekmesinde bir `.sma` kaynak dosyası seç → Nexora onu `.amxx` (native 64-cell
+  binary) yapar → `Addons` paketine ekler → sonraki Patch'te otomatik gelir.
+- 32-bit cell `.amxx` yüklemeleri derleme/kurulumda bilinçli reddedilir; uyumsuzluk
+  uyarısı verilir.
 
-1. **build-amxx** — fetches upstream `alliedmodders/amxmodx` master, applies
-   [`patches/`](patches/) **in order** (64-bit cell casts, AMTL 64-bit, pawncc 64-bit
-   literal-pool, metamod-p aarch64/Android module loading, HAM/cbase/pev adapters, module
-   dlopen), and cross-compiles with the NDK: AMXX core + all 11 modules + metamod-p +
-   a 64-cell host `pawncc`.
-2. **amxx-bundle** — `gen-bundle.py` produces `amxx-bundle.zip` (libraries + addons +
-   bundle.json) and uploads it as a release artifact; the embedded bundle in the APK is the
-   offline fallback so patching works even without network.
-3. **app-apk** — embeds the bundle into the patcher Android app and assembles + signs the
-   patcher APK (`applicationId` and signing keystore are preserved, so the patched CS1.6
-   app updates in place).
+## Addons (Mod Paketi / Bundle)
 
-Plugins (`.sma`) shipped in the bundle are compiled to `.amxx` by that same 64-cell `pawncc`
-during CI and land in `addons/amxmodx/plugins` with their configs.
+- Uygulama + CI, **bundle** adı verilen zip içinde AMXX modülleri, metamod, derleyici ve
+  örnek eklentileri paketler; APK'ya gömülü olduğundan **çevrimdışı** da çalışır.
+- `Addons` sekmesinde paketin içeriğini (çekirdek, modüller, plugin listesi) görür,
+  internetten güncel sürümü çekebilir ya da gömülü olanı kullanırsın.
 
-## Repository layout
+## Repository Layout
 
-- `patches/` — the ordered patch set applied to upstream AMXX/pawncc/metamod.
-- `android/ci/` — shell build scripts (NDK cross-compile, bundle, patch).
-- `android/app/` — the Android patcher (Compose UI + patch/sign pipeline + offline bundle).
-- `android/hlsdk/` — vendored Half-Life SDK headers needed by the AMXX build.
+- `android/app/` — patcher APK (Jetpack Compose: Patch · Compile · Addons).
+- `android/ci/` — build script'leri: AMXX (64-cell) + pawncc + metamod + bundle paketleme.
+- `patches/` — upstream AMXX/pawncc/metamod'a uygulanan sıralı 64-bit patch seti.
+- `android/hlsdk/` — AMXX derlemesi için gerekli SDK başlıkları.
 
-## Building locally
+## CI / Yapı
 
-Requires the Android NDK; a normal non-release build is just:
+`.github/workflows/` dev/alanlarında önce AMXX 64-cell çekirdek+modüller+host pawncc
+çapraz derler, bundle'ı paketler, sonra patcher APK'yı kurar+imzalar. Yerel:
 
 ```sh
 bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 ```
 
-## Status
+## Durum / İyileştirmeye Açık
 
-CI compiles AMXX (64-cell) + a 64-cell `pawncc`, compiles the sample plugins, packs the
-bundles and builds + signs the patcher APK. On-device runtime validation of a fully patched
-APK is still in progress.
+- On-cihaz çalışma doğrulaması: bekliyor.
+- Kullanıcının `addons/` altında yaptığı değişiklikler sonraki repatch'te üzerine yazılır.
