@@ -225,27 +225,35 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_MSG=$(echo '${{ steps.build_type.outputs.commit_msg }}' | head -c 500)
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${GITHUB_REF_NAME}"
           if compgen -G "android/app/build/outputs/apk/release/*.apk" >/dev/null; then
             APK_COUNT=$(ls android/app/build/outputs/apk/release/*.apk | wc -l)
           else
             APK_COUNT=0
           fi
-          APK_FIELD=""
           if [ "$APK_COUNT" -gt 0 ]; then
+            TITLE="Nexora v${VERSION} released"
+            STATUS_FIELD=":white_check_mark: App update ready"
+            TYPE_FIELD="App + libs"
             APK_URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/nexora_v${VERSION}.apk"
             APK_FIELD=", { \"name\": \"Download\", \"value\": \"[nexora_v${VERSION}.apk](${APK_URL})\", \"inline\": true }"
+          else
+            TITLE="Nexora v${VERSION} libs &amp; plugins update"
+            STATUS_FIELD=":white_check_mark: Libs &amp; plugins updated"
+            TYPE_FIELD="Bundle only (no APK)"
+            APK_FIELD=""
           fi
           BODY=$(cat <<EOF
           {
             "embeds": [{
-              "title": "Nexora v${VERSION} released",
+              "title": "${TITLE}",
               "description": "$COMMIT_MSG",
               "color": 5763719,
-              "url": "https://github.com/${REPO}/releases/tag/${GITHUB_REF_NAME}",
+              "url": "${RELEASE_URL}",
               "fields": [
-                { "name": "Status", "value": ":white_check_mark: Build and release succeeded", "inline": true },
+                { "name": "Status", "value": "${STATUS_FIELD}", "inline": true },
                 { "name": "Version", "value": "v${VERSION}", "inline": true },
-                { "name": "APK", "value": "${APK_COUNT} file(s)", "inline": true }${APK_FIELD}
+                { "name": "Type", "value": "${TYPE_FIELD}", "inline": true }${APK_FIELD}
               ]
             }]
           }
