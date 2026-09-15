@@ -1,9 +1,11 @@
 diff --git a/compiler/libpc300/sc1.c b/compiler/libpc300/sc1.c
 --- a/compiler/libpc300/sc1.c
 +++ b/compiler/libpc300/sc1.c
-@@ -3364,4 +3364,14 @@ static int newfunc(char *firstname,int firsttag,int fpublic,int fstatic,int stoc
+@@ -3359,8 +3359,18 @@ static int newfunc(char *firstname,int firsttag,int fpublic,int fstatic,int sto
+   cell val,cidx,glbdecl;
    short filenum;
-   int    state_id;
+   int state_id;
+-
 -  assert(litidx==0);    /* literal queue should be empty */
 -  litidx=0;             /* clear the literal pool (should already be empty) */
 +#if PAWN_CELL_SIZE==32
@@ -18,6 +20,6 @@ diff --git a/compiler/libpc300/sc1.c b/compiler/libpc300/sc1.c
 +    dumplits();         /* dump any pending literals into the data segment */
 +#endif
 +  litidx=0;             /* clear the literal pool (should already be empty) */
- 
    opertok=0;
    lastst=0;             /* no statement yet */
+   cidx=0;               /* just to avoid compiler warnings */
