@@ -223,22 +223,29 @@ jobs:
             exit 0
           fi
           VERSION="${GITHUB_REF_NAME#v}"
+          REPO="${GITHUB_REPOSITORY}"
           COMMIT_MSG=$(echo '${{ steps.build_type.outputs.commit_msg }}' | head -c 500)
           APK_COUNT=$(ls android/app/build/outputs/apk/release/*.apk 2>/dev/null | wc -l)
+          APK_FIELD=""
+          if [ "$APK_COUNT" -gt 0 ]; then
+            APK_URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/nexora_v${VERSION}.apk"
+            APK_FIELD=", { \"name\": \"Download\", \"value\": \"[nexora_v${VERSION}.apk](${APK_URL})\", \"inline\": true }"
+          fi
           BODY=$(cat <<EOF
           {
             "embeds": [{
-              "title": "Nexora v${VERSION} release yayinlandi",
+              "title": "Nexora v${VERSION} released",
               "description": "$COMMIT_MSG",
               "color": 5763719,
+              "url": "https://github.com/${REPO}/releases/tag/${GITHUB_REF_NAME}",
               "fields": [
-                { "name": "Durum", "value": ":white_check_mark: Build ve release basarili", "inline": true },
-                { "name": "Surum", "value": "v${VERSION}", "inline": true },
-                { "name": "APK", "value": "${APK_COUNT} dosya", "inline": true }
+                { "name": "Status", "value": ":white_check_mark: Build and release succeeded", "inline": true },
+                { "name": "Version", "value": "v${VERSION}", "inline": true },
+                { "name": "APK", "value": "${APK_COUNT} file(s)", "inline": true }${APK_FIELD}
               ]
             }]
           }
           EOF
           )
           curl -fsSL -H "Content-Type: application/json" \
-            -d "$BODY" "$DISCORD_WEBHOOK" >/dev/null || echo "Discord webhook gonderilemedi"
+            -d "$BODY" "$DISCORD_WEBHOOK" >/dev/null || echo "Failed to send Discord webhook"
