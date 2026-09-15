@@ -1,47 +1,50 @@
 # Nexora
 
-**Nexora** repacks the CS1.6 Android client APK so it bundles **AMX Mod X** compiled for
-**64-bit cells** (`PAWN_CELL_SIZE=64`, ABI `arm64-v8a` only), then re-signs it. No server-side
-AMXX install is needed — the patched APK is self-contained and runnable on any aarch64 Android
-device.
+**Nexora** repacks the **CS1.6 Android client (Xash3D)** APK so the patched app bundles
+**AMX Mod X (actı 64-bit hücre)** + **Metamod-P** + the AMXX addons, then re-signs it.
+No server-side AMXX install is needed — the patched APK is self-contained.
 
-It is a *companion/cell-sized* sibling of the generic 64-bit AMXXX builds: the core difference is
-that here the literal pool is sized for 64-bit cells, so a plugin uses twice the bytes the same
-plugin would use on a 32-bit cell build.
+Only **arm64-v8a** builds are supported (that's the ABI Xash3D ships on Android); arm32/x86
+APKs are rejected with a clear error.
 
-## Why 64-bit cells
+## Why 64-bit cells?
 
-AMX's cell is `sizeof(cell)` bytes wide — 4 on standard pawn32, **8 on this build**. A pointer
-(stored in a cell) needs all 8 bytes on arm64, so every cell-related macro and the literal queue
-are resized for 64. A 32-cell `.amxx` plugin is rejected by the 64-core at load time, which is why
-the shipped plugins and the CI compiler are also 64-cell.
+AMX's cell on this Android build is **64 bits** (`PAWN_CELL_SIZE=64`), so a pointer fits in
+one cell. Everything here — compiler, AMXX core, metamod, every module, and the `pawncc`
+host compiler — is built with 64-bit cells maturely patched for literal-heavy plugins
+(literal pool sized/flushed cell-aware, so compiling `.sma` with many const-strings no longer
+aborts with `assert(litidx==0)` on the 64-cell path). 32-bit-cell `.amxx` plugins are rejected
+at load time.
 
-## What happens
+## How the build works (CI)
 
-The CI ([`android/ci/build-amxx.sh`](android/ci/build-amxx.sh), [workflow](.github/workflows)):
+`.github/workflows/…`:
 
-1. Clones upstream `alliedmodders/amxmodx` master and applies [`patches/`](patches/) **in order**
-   (mostly 64-bit-cell adaptations: CDetour cell casts, AMTL 64-bit, pawncc literal pool, Android
-   metamod/AMXX loading, floats, pcvar handles, param convert, cbase/pev, and the HAM trampoline
-   on arm64).
-2. Cross-compiles with the NDK: AMXX core + modules + metamod-p + the **host compiler** `pawncc`
-   (also PAWN_CELL_SIZE=64 so it can compile plugin-heavy `.sma` without aborting on the literal
-   queue assert).
-3. Compiles sample plugins from `.sma` → `.amxx` with that compiler.
-4. Packs everything into release artifacts and uploads them; the Android patcher APK embeds them
-   so the app works even offline.
+1. **build-amxx** — fetches upstream `alliedmodders/amxmodx` master, applies
+   [`patches/`](patches/) **in order** (64-bit cell casts, AMTL 64-bit, pawncc 64-bit
+   literal-pool, metamod-p aarch64/Android module loading, HAM/cbase/pev adapters, module
+   dlopen), and cross-compiles with the NDK: AMXX core + all 11 modules + metamod-p +
+   a 64-cell host `pawncc`.
+2. **amxx-bundle** — `gen-bundle.py` produces `amxx-bundle.zip` (libraries + addons +
+   bundle.json) and uploads it as a release artifact; the embedded bundle in the APK is the
+   offline fallback so patching works even without network.
+3. **app-apk** — embeds the bundle into the patcher Android app and assembles + signs the
+   patcher APK (`applicationId` and signing keystore are preserved, so the patched CS1.6
+   app updates in place).
 
-## Layout
+Plugins (`.sma`) shipped in the bundle are compiled to `.amxx` by that same 64-cell `pawncc`
+during CI and land in `addons/amxmodx/plugins` with their configs.
 
-- `patches/` — the ordered patch set CI applies to upstream amxmodx / metamod / pawncc.
-- `android/ci/` — the shell build scripts run by the workflow.
-- `android/app/` — the patcher APK (Compose UI pick→patch→re-sign).
-- `patches/*.patch` files whose names start with `amxmodx-` are applied to the `amxmodx` source;
-   `amxmodx-pawncc-64bit.patch` etc. adapt the compiler.
+## Repository layout
+
+- `patches/` — the ordered patch set applied to upstream AMXX/pawncc/metamod.
+- `android/ci/` — shell build scripts (NDK cross-compile, bundle, patch).
+- `android/app/` — the Android patcher (Compose UI + patch/sign pipeline + offline bundle).
+- `android/hlsdk/` — vendored Half-Life SDK headers needed by the AMXX build.
 
 ## Building locally
 
-Requires the Android NDK and a GH token only for the release step; a normal build is:
+Requires the Android NDK; a normal non-release build is just:
 
 ```sh
 bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
@@ -49,5 +52,6 @@ bash android/ci/build-amxx.sh "$PWD" "$NDK_ROOT" out
 
 ## Status
 
-On-device runtime validation (the patched APK actually running an AMXX plugin) is still pending;
-compile and packaging are exercised in CI.
+CI compiles AMXX (64-cell) + a 64-cell `pawncc`, compiles the sample plugins, packs the
+bundles and builds + signs the patcher APK. On-device runtime validation of a fully patched
+APK is still in progress.
