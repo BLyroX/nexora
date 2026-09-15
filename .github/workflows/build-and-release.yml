@@ -250,6 +250,8 @@ jobs:
               "description": "$COMMIT_MSG",
               "color": 5763719,
               "url": "${RELEASE_URL}",
+              "thumbnail": { "url": "attachment://thumbnail.jpg" },
+              "image": { "url": "attachment://image.jpg" },
               "fields": [
                 { "name": "Status", "value": "${STATUS_FIELD}", "inline": true },
                 { "name": "Version", "value": "v${VERSION}", "inline": true },
@@ -259,5 +261,7 @@ jobs:
           }
           EOF
           )
-          curl -fsSL -H "Content-Type: application/json" \
-            -d "$BODY" "$DISCORD_WEBHOOK" 2>&1 >/dev/null || { echo "Failed to send Discord webhook (exit=$?)"; exit 0; }
+          curl -fsSL -F "payload_json=$BODY" \
+            -F "thumbnail=@.github/assets/thumbnail.jpg" \
+            -F "image=@.github/assets/image.jpg" \
+            "$DISCORD_WEBHOOK" 2>&1 >/dev/null || { echo "Failed to send Discord webhook (exit=$?)"; exit 0; }
