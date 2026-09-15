@@ -1,6 +1,6 @@
 # Changes vs upstream
 
-Every change made to run AMXX as a **64-bit-cell** build inside CS16Client (Xash3D) on
+Every change made to run AMXX as a **64-bit-cell** build inside Nexora (Xash3D) on
 **aarch64 Android**, delivered through a patcher APK.
 
 Upstream baseline: `alliedmodders/amxmodx` **master** (fetched fresh in CI) + the in-order
@@ -60,7 +60,7 @@ a function pointer in a 4-byte cell; the whole toolchain must use 64-bit cells.
 
 ## Patcher APK
 
-- Picks a CS16Client APK, validates ABI (`arm64-v8a` only), prunes the exact 13 AMXX/metamod
+- Picks a Nexora APK, validates ABI (`arm64-v8a` only), prunes the exact 13 AMXX/metamod
   libraries + `META-INF/` (previously a `lib/arm64-v8a/lib` **prefix** match would have deleted
   every native engine library), injects the bundle payload (16 KB-aligned STORED `.so`, DEFLATED
   addons) and re-signs with the bundled keystore.
