@@ -197,7 +197,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
 
     val hasCachedBundle: Boolean get() = bundleProvider.hasCachedBundle()
 
-    val repo = "berkchy/cs16-meta-patcher"
+    val repo = "berkchy/nexora"
 
     private val workDir = File(app.getExternalFilesDir(null) ?: app.cacheDir, "patcher")
     private val libsDir = File(app.getExternalFilesDir(null) ?: app.cacheDir, "libs")
@@ -717,7 +717,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val notes = rel.body.orEmpty()
                 val apk = rel.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
                 val url = apk?.browser_download_url
-                    ?: "https://github.com/$APP_RELEASE_REPO/releases/download/$tag/CS16-Meta-Patcher-release.apk"
+                    ?: "https://github.com/$APP_RELEASE_REPO/releases/download/$tag/nexora_v${tag.removePrefix("v")}.apk"
                 val size = apk?.size ?: 0L
                 val hasApkAsset = apk != null
                 var commits = emptyList<String>()
@@ -893,7 +893,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         } catch (_: Throwable) {
             "unknown"
         }
-        sb.append("CS16-Meta Patcher ").append(ver).append("\n")
+        sb.append("Nexora ").append(ver).append("\n")
         sb.append("Game dir: ").append(_installPath.value).append("\n\n")
         fun tail(f: File, max: Int = 60): List<String> = try {
             if (!f.exists()) return listOf("(missing: ${f.path})")
@@ -1207,7 +1207,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         /** ABIs the patcher can build for, in priority order. */
         val SUPPORTED_ABIS = listOf("arm64-v8a", "armeabi-v7a")
         /** Releases (tags + patcher APK) are published here by CI. */
-        const val APP_RELEASE_REPO = "berkchy/cs16-meta-patcher"
+        const val APP_RELEASE_REPO = "berkchy/nexora"
         const val NOTIFICATION_CHANNEL_ID = "bundle_updates"
         const val NOTIFICATION_ID = 1001
 

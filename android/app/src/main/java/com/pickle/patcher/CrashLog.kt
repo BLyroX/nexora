@@ -14,8 +14,8 @@ import java.util.Date
 import java.util.Locale
 
 object CrashLog {
-    private const val TAG = "PatcherCrash"
-    private const val FILE_NAME = "patcher-crash.txt"
+    private const val TAG = "NexoraCrash"
+    private const val FILE_NAME = "nexora-crash.txt"
 
     fun install(context: Context) {
         val prev = Thread.getDefaultUncaughtExceptionHandler()

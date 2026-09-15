@@ -26,6 +26,8 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.RocketLaunch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -64,7 +66,7 @@ import com.pickle.patcher.ui.screens.CompilerScreen
 import com.pickle.patcher.ui.screens.PluginsScreen
 import com.pickle.patcher.ui.screens.CrashLogScreen
 import com.pickle.patcher.ui.screens.PatchScreen
-import com.pickle.patcher.ui.theme.AmxxPatcherTheme
+import com.pickle.patcher.ui.theme.NexoraTheme
 import com.pickle.patcher.ui.theme.Black
 import com.pickle.patcher.ui.theme.Gray40
 import com.pickle.patcher.ui.theme.Gray60
@@ -79,7 +81,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            AmxxPatcherTheme {
+            NexoraTheme {
                 val vm: PatcherViewModel = viewModel()
                 LaunchedEffect(Unit) {
                     vm.autoInstallAddons()
@@ -141,7 +143,17 @@ fun PatcherApp(vm: PatcherViewModel) {
         contentColor = White,
         topBar = {
             TopAppBar(
-                title = { Text("CS16-Meta Patcher", style = MaterialTheme.typography.titleMedium) },
+                title = {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Icon(
+                            painter = painterResource(id = R.mipmap.ic_launcher),
+                            contentDescription = null,
+                            modifier = Modifier.height(24.dp).width(24.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Nexora", style = MaterialTheme.typography.titleMedium)
+                    }
+                },
                 navigationIcon = {
                     if (currentRoute == "plugins") {
                         IconButton(onClick = { nav.popBackStack() }) {
@@ -317,20 +329,20 @@ private fun OverflowMenu(
         }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("CS16-Meta Patcher") },
+            title = { Text("Nexora") },
             text = {
                 Column {
                     Text("Version: $version", style = MaterialTheme.typography.bodySmall, color = Gray40)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Patches and mods CS16Client on Android: AMXX bundle injection, " +
+                        "AMXX bundle injection for CS 1.6 on Android: " +
                             "Pawn compiler, addons manager and crash logs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Gray40,
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "github.com/berkchy/cs16-meta-patcher",
+                        "github.com/berkchy/nexora",
                         style = MaterialTheme.typography.bodySmall,
                         color = Gray40,
                     )

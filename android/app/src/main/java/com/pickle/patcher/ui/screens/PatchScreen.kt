@@ -77,18 +77,7 @@ fun PatchScreen(vm: PatcherViewModel) {
             .verticalScroll(scroll)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(
-            "CS16 Patcher",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "Select an APK, load a mod bundle, then patch and install.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Gray40,
-        )
-
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(4.dp))
 
         SectionHeader("SOURCE APK")
         SourceCard(vm)

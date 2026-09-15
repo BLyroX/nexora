@@ -4,7 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 
-val AmxxDarkScheme = darkColorScheme(
+val NexoraDarkScheme = darkColorScheme(
     primary = Accent,
     onPrimary = Black,
     primaryContainer = AccentDim,
@@ -38,10 +38,10 @@ val AmxxDarkScheme = darkColorScheme(
 )
 
 @Composable
-fun AmxxPatcherTheme(content: @Composable () -> Unit) {
+fun NexoraTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = AmxxDarkScheme,
-        typography = AmxxTypography,
+        colorScheme = NexoraDarkScheme,
+        typography = NexoraTypography,
         content = content,
     )
 }

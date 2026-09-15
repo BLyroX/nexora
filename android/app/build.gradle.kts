@@ -6,7 +6,7 @@ plugins {
 }
 
 base {
-    archivesName.set("CS16-Meta-Patcher")
+    archivesName.set("nexora")
 }
 
 val signingStoreFile = rootProject.file("debug/patcher-release.p12")

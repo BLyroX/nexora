@@ -145,7 +145,7 @@ fun CrashLogScreen(vm: PatcherViewModel) {
 private fun shareCrash(context: Context, content: String) {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
-        putExtra(Intent.EXTRA_TEXT, "patcher-crash.txt\n\n$content")
+        putExtra(Intent.EXTRA_TEXT, "nexora-crash.txt\n\n$content")
     }
     context.startActivity(Intent.createChooser(intent, "Share crash log"))
 }
