@@ -66,6 +66,29 @@ a function pointer in a 4-byte cell; the whole toolchain must use 64-bit cells.
   addons) and re-signs with the bundled keystore.
 - Bundle source: newest GitHub release, embedded asset as offline fallback.
 
+## ReGameDLL / CS game DLL first-spawn fix
+
+- `regamedll-spawn-justconnected.diff` — applied to the ReGameDLL_CS fork
+  (`regamedll/dlls/player.cpp`, baseline `7be9d59`) that produces `libcs.so`.
+
+  Symptom: joining a server, the player's **first** spawn happens unarmed
+  (no ammo HUD, cannot fire); switching team and respawning fixes it.
+
+  Cause: `CBasePlayer::Spawn()` can run while the joining state machine has not
+  reached `GetIntoGame()` yet (round-restart/respawn firing right after
+  `JoinTeam` set `GETINTOGAME`). `m_bJustConnected` is still true, so
+  `PlayerSpawn` skips `OnSpawnEquip`, and `OnSpawnEquip` skips
+  `GiveDefaultItems` while `m_bNotKilled` still holds — the player spawns alive
+  but weapon-less until a team switch runs `GetIntoGame`.
+
+  Fix: in `Spawn()`, promote such a spawn to a regular in-game spawn (clear
+  `m_bJustConnected`/`m_bNotKilled`, set `m_iJoiningState = JOINED`) when the
+  player already has a team. The connect-time no-op spawn
+  (`m_iJoiningState == PICKINGTEAM`) keeps its guarded behaviour.
+
+  Ship: rebuild `libcs.so` from the ReGameDLL_CS fork with this patch applied
+  and publish the game APK release; the patcher picks it up unchanged.
+
 ## Known residual issues
 
 - On-device runtime smoke test is still pending (native build + patcher logic verified in CI/ locally).

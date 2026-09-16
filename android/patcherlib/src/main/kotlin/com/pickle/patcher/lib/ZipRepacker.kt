@@ -35,6 +35,12 @@ object ZipRepacker {
      * in RemoveAllItems / Killed / DetachTank / Disappear / StartObserver / PlayerUse /
      * ItemPostFrame.
      * Single byte per site: opcode byte 0xB4 -> 0xB6.
+     *
+     * The guard is applied to BOTH the base APK's libcs (kept entry) and a
+     * bundle-shipped libcs (see the bundle-entry loop). NOTE: these file offsets
+     * are tied to a specific libcs build — when libcs is rebuilt (e.g. new
+     * ReGameDLL commit / compiler), every site MUST be re-derived from the
+     * resulting .so or the fail-safe silently skips the guard.
      */
     val LIBCS_ENTRY = "lib/arm64-v8a/libcs_android_arm64.so"
 
@@ -225,9 +231,19 @@ object ZipRepacker {
                 // add bundle entries
                 val added = ArrayList<String>()
                 for (be in bundle.manifest.entries) {
-                    val content = bundle.resolveEntry(be) ?: continue
+                    var content = bundle.resolveEntry(be) ?: continue
                     val stored = be.method == BundleManifest.Compression.STORED
                     added.add(be.target)
+
+                    // a bundled libcs replaces the base entry (removed above); it still
+                    // needs the weapon-slot guard, so apply it here too (fail-safe).
+                    if (be.target == LIBCS_ENTRY) {
+                        val guarded = patchLibCs(content)
+                        if (guarded != null) {
+                            content = guarded
+                            patchedLibs.add(be.target)
+                        }
+                    }
 
                     if (stored) {
                         val crc = crc32(content)

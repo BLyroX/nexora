@@ -459,6 +459,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 name == "libyapb.so" -> "YaPB bot plugin"
                 name == "libclient_android_$suffix.so" -> "CS16Client client DLL"
                 name == "libmenu_android_$suffix.so" -> "CS16Client main menu"
+                name == "libcs_android_arm64.so" -> "ReGameDLL game DLL (first-spawn fix)"
                 name.contains("_amxx_") -> "AMXX module"
                 else -> "Bundle file"
             }
@@ -500,6 +501,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             name == "libyapb.so" -> "yapb"
             name.startsWith("libclient_android_") -> "client"
             name.startsWith("libmenu_android_") -> "menu"
+            name.startsWith("libcs_android_") -> "game"
             name.contains("_amxx_") -> "modules"
             else -> "other"
         }
@@ -508,7 +510,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
     /** Components included in the current patch, derived from the loaded bundle. */
     fun patchComponents(): List<PatchComponent> {
         val b = loadedBundle ?: return emptyList()
-        val order = listOf("amxx", "metamod", "yapb", "client", "menu", "modules", "other")
+        val order = listOf("amxx", "metamod", "yapb", "client", "menu", "modules", "game", "other")
         return b.manifest.entries
             .groupBy { componentKeyFor(it.target) }
             .mapNotNull { (key, entries) ->
@@ -518,6 +520,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     "yapb" -> "YaPB bot plugin"
                     "client" -> "CS16Client client DLL"
                     "menu" -> "CS16Client main menu"
+                    "game" -> "ReGameDLL game DLL"
                     "modules" -> "AMXX modules"
                     else -> "Bundle files"
                 }
