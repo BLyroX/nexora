@@ -1120,6 +1120,16 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             val total = sources.size
             val log = StringBuilder()
             var failed = 0
+            // Script Folder holds the folder the user picked for plugins
+            // (e.g. .../amxmodx/scripting). Log files live in exactly
+            // ScriptFolder/logs/ (only "logs/" appended, never another
+            // "scripting", even if the picker already points at the
+            // scripting folder).
+            val scriptFolder = File(sources.first().path).parentFile
+            val logDir = if (scriptFolder != null) File(scriptFolder, "logs") else null
+            val compilerLog = logDir?.let { File(it, "compiler.log") }
+            val errorLog = logDir?.let { File(it, "error.log") }
+            logDir?.mkdirs()
             for ((i, source) in sources.withIndex()) {
                 _compile.value = CompileState.Compiling("${source.name} ($i of $total)")
                 val (ok, body) = try {
@@ -1132,6 +1142,19 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     .append(body.trim().ifEmpty { if (ok) "Done." else "Compile failed." })
                     .append('\n')
                     .append('\n')
+                val entry = "── ${source.name} ──\n${body.trim()}\n\n"
+                val target = if (ok) compilerLog else errorLog
+                if (target != null) {
+                    try {
+                        val stamp = java.text.SimpleDateFormat(
+                            "yyyy-MM-dd HH:mm:ss", java.util.Locale.US
+                        ).format(java.util.Date())
+                        target.appendText(
+                            if (ok) entry
+                            else "===== $stamp ${source.name} =====\n$entry"
+                        )
+                    } catch (_: Throwable) {}
+                }
                 if (!ok) failed++
             }
             val okCount = total - failed

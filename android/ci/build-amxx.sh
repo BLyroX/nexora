@@ -164,6 +164,12 @@ apply_patch "$PATCHES/amxmodx-pdata-runtime-translate.diff" "$SRC/amxmodx"
 # index. That is a legitimate pattern, so remove the overly-strict assert.
 sed -i "s/array_level==\s*'0'/array_level==0/g" "$SRC/amxmodx/compiler/libpc300/sc3.c"
 sed -i "/assert(lval2.sym==NULL/d" "$SRC/amxmodx/compiler/libpc300/sc3.c"
+# Fix compiler assertion in debug-info generation: every automaton gets an
+# anonymous state (empty name, scstate.c automaton_add) that append_dbginfo()
+# walked bare. Plugins using state machines (eg ze_extra_star_chaser.sma) then
+# aborted amxxpc with 'assert "strlen(constptr->name)>0" failed'. Skip empty
+# names like the automaton table already does.
+apply_patch "$PATCHES/amxmodx-sc6-state-dbginfo.patch" "$SRC/amxmodx"
 # AMXX core is still compiled against metamod-p's meta_api.h (METAMOD above),
 # which requires this ARM64 shim (cs16_amxx_compat.h + const SET_LOCALINFO).
 apply_patch "$PATCHES/metamod-p-aarch64.patch"            "$SRC/metamod-p"
@@ -308,6 +314,16 @@ AMXX=$SRC/amxmodx
 HLSDK=$REPO_ROOT/android/hlsdk
 METAMOD=$SRC/metamod-p/metamod
 MMHLSDK=$SRC/metamod-p/hlsdk
+
+# Compiler (amxxpc) output logs. Script Folder holds the folder the user picked
+# for plugins (e.g. .../amxmodx/scripting). We append ONLY "logs/" to its value:
+#   ScriptFolder  ->  ScriptFolder/logs/compiler.log, ScriptFolder/logs/error.log
+# so picking the scripting folder itself yields .../scripting/logs (no double
+# "scripting"). Default stays amxmodx/scripting when no folder is supplied.
+SCRIPT_FOLDER="${SCRIPT_FOLDER:-$AMXX/scripting}"
+LOGS_DIR="$SCRIPT_FOLDER/logs"
+COMPILER_LOG="$LOGS_DIR/compiler.log"
+ERROR_LOG="$LOGS_DIR/error.log"
 
 # Hamsandwich Trampolines.h: reinterpret_cast<int>(extraptr) truncates
 # a 64-bit pointer on ARM64. Fix: use intptr_t.
@@ -1008,6 +1024,7 @@ fi
 
 if [[ -n "$PAWNCC" && -n "$PLUGINS_SRC" && -d "$PLUGINS_SRC" ]]; then
   echo "== compiling plugins (64-bit cells) =="
+  mkdir -p "$LOGS_DIR"
   extra_inc=(-i"$AMXX/plugins/include")
   [ -d "$PLUGINS_SRC/include" ] && extra_inc+=(-i"$PLUGINS_SRC/include")
   for f in "$PLUGINS_SRC"/*.sma; do
@@ -1021,6 +1038,10 @@ if [[ -n "$PAWNCC" && -n "$PLUGINS_SRC" && -d "$PLUGINS_SRC" ]]; then
     if [ $rc -ne 0 ]; then
       echo "   FAILED: $f (rc=$rc)" >&2
       printf '%s\n' "$out" >&2
+      {
+        printf '\n===== %s rc=%d : %s =====\n' "$(date -Is)" "$rc" "$f"
+        printf '%s\n' "$out"
+      } >> "$ERROR_LOG"
       # lib-only sanity (same lib, no driver): does Compile64 succeed alone?
       if command -v python3 >/dev/null 2>&1; then
         LC_ALL=C.UTF-8 python3 - "$f" "$local_out" "$AMXX/plugins/include" "$PC_BUILD" <<'PY' >&2 || true
@@ -1040,6 +1061,7 @@ PY
       exit 1
     fi
     echo "   $(basename "$f") OK"
+    { printf '%s\n' "$out"; } >> "$COMPILER_LOG"
   done
 fi
 
