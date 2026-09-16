@@ -118,6 +118,10 @@ data class Bundle(
 ) {
     fun resolveEntry(e: BundleManifest.BundleEntry): ByteArray? = files[e.source]
 
+    /** Returns a copy that only injects [entries]; the blob map stays complete. */
+    fun withEntries(entries: List<BundleManifest.BundleEntry>): Bundle =
+        Bundle(manifest.copy(entries = entries), files)
+
     companion object {
         private const val MANIFEST_PATH = "bundle.json"
 

@@ -480,6 +480,59 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         return Bundle(manifest, files)
     }
 
+    /** A group of bundle entries the user can toggle individually before patching. */
+    data class PatchComponent(
+        val key: String,
+        val label: String,
+        val description: String,
+        val entryTargets: List<String>,
+    ) {
+        override fun equals(other: Any?): Boolean = other is PatchComponent && other.key == key
+        override fun hashCode(): Int = key.hashCode()
+    }
+
+    /** Categorizes a bundle target path into a selectable component key. */
+    private fun componentKeyFor(target: String): String {
+        val name = target.substringAfterLast("/")
+        return when {
+            name == "libamxmodx.so" -> "amxx"
+            name == "libmetamod.so" || name.startsWith("libyapb_android_") -> "metamod"
+            name == "libyapb.so" -> "yapb"
+            name.startsWith("libclient_android_") -> "client"
+            name.startsWith("libmenu_android_") -> "menu"
+            name.contains("_amxx_") -> "modules"
+            else -> "other"
+        }
+    }
+
+    /** Components included in the current patch, derived from the loaded bundle. */
+    fun patchComponents(): List<PatchComponent> {
+        val b = loadedBundle ?: return emptyList()
+        val order = listOf("amxx", "metamod", "yapb", "client", "menu", "modules", "other")
+        return b.manifest.entries
+            .groupBy { componentKeyFor(it.target) }
+            .mapNotNull { (key, entries) ->
+                val label = when (key) {
+                    "amxx" -> "AMX Mod X core"
+                    "metamod" -> "Metamod HL1"
+                    "yapb" -> "YaPB bot plugin"
+                    "client" -> "CS16Client client DLL"
+                    "menu" -> "CS16Client main menu"
+                    "modules" -> "AMXX modules"
+                    else -> "Bundle files"
+                }
+                PatchComponent(
+                    key = key,
+                    label = label,
+                    description = entries.joinToString(", ") {
+                        it.target.substringAfterLast("/")
+                    },
+                    entryTargets = entries.map { it.target },
+                )
+            }
+            .sortedBy { order.indexOf(it.key) }
+    }
+
     /**
      * Attempt incremental update: fetch manifest.json, compare hashes, download only changed .so files.
      * Returns true if incremental update succeeded, false if we should fall back to legacy bundle zip.
@@ -570,7 +623,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun startPatch() {
+    fun startPatch(selectedComponentKeys: Set<String>? = null) {
         val src = _receivedSource.value ?: return
         val b = loadedBundle ?: return
         val selAbi = _abi.value
@@ -589,6 +642,18 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             )
             return
         }
+        // Filter the bundle down to the user-selected components. A null selection
+        // means "everything" (keeps the pre-dialog behaviour).
+        val effectiveBundle = if (selectedComponentKeys == null) {
+            b
+        } else {
+            val kept = b.manifest.entries.filter { componentKeyFor(it.target) in selectedComponentKeys }
+            b.withEntries(kept)
+        }
+        if (effectiveBundle.manifest.entries.isEmpty()) {
+            _patch.value = PatchUiState.Failed("No patch components selected.")
+            return
+        }
         val keystore = runCatching { loadSigningKeystore() }
             .getOrElse {
                 _patch.value = PatchUiState.Failed("Signing key could not be loaded: ${it.message}")
@@ -600,7 +665,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
             _patch.value = PatchUiState.Running(ApkPatcher.Step.ANALYZE, 0f)
             try {
                 val report = ApkPatcher.patch(
-                    ApkPatcher.PatchRequest(src, out, b, keystore, keepAbi = selAbi),
+                    ApkPatcher.PatchRequest(src, out, effectiveBundle, keystore, keepAbi = selAbi),
                     onStep = { step, p ->
                         _patch.value = PatchUiState.Running(step, p)
                     },

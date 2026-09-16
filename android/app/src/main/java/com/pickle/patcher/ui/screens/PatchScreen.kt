@@ -42,11 +42,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.heightIn
 import com.pickle.patcher.lib.ApkPatcher
 import com.pickle.patcher.patcher.AddonsState
 import com.pickle.patcher.patcher.BundleState
@@ -371,13 +379,14 @@ private fun PatchCard(vm: PatcherViewModel) {
     val context = LocalContext.current
     val canPatch = vm.source.collectAsState().value != null &&
         (bundle is BundleState.Ready || bundle is BundleState.Loaded)
+    var showComponents by rememberSaveable { mutableStateOf(false) }
 
     AppCard {
         when (val s = state) {
             is PatchUiState.Idle -> {
                 PrimaryButton(
                     text = "Patch & Sign APK",
-                    onClick = { vm.startPatch() },
+                    onClick = { showComponents = true },
                     enabled = canPatch,
                     icon = { Icon(Icons.Filled.RocketLaunch, null, modifier = Modifier.size(18.dp)) },
                 )
@@ -407,6 +416,128 @@ private fun PatchCard(vm: PatcherViewModel) {
             }
         }
     }
+
+    if (showComponents && canPatch && state is PatchUiState.Idle) {
+        val components = remember(vm) { vm.patchComponents() }
+        PatchComponentsDialog(
+            components = components,
+            onConfirm = { selectedKeys ->
+                showComponents = false
+                vm.startPatch(selectedKeys)
+            },
+            onDismiss = { showComponents = false },
+        )
+    }
+}
+
+@Composable
+private fun PatchComponentsDialog(
+    components: List<PatcherViewModel.PatchComponent>,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val allKeys = components.map { it.key }
+    var selected by remember { mutableStateOf(allKeys.toSet()) }
+    val allSelected = selected.size == allKeys.size
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Patch Components") },
+        text = {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            selected = if (allSelected) emptySet() else allKeys.toSet()
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = allSelected,
+                        onCheckedChange = {
+                            selected = if (it) allKeys.toSet() else emptySet()
+                        },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (allSelected) "All components (${selected.size})" else "Select all",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+                if (components.isEmpty()) {
+                    Text(
+                        "No components found in the loaded bundle.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Gray40,
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        components.forEach { c ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selected = if (c.key in selected) {
+                                            selected - c.key
+                                        } else {
+                                            selected + c.key
+                                        }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = c.key in selected,
+                                    onCheckedChange = { on ->
+                                        selected = if (on) selected + c.key else selected - c.key
+                                    },
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        c.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (c.key in selected) White else Gray40,
+                                    )
+                                    Text(
+                                        c.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Gray40,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Only selected components will be injected into the APK.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Gray60,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(selected) },
+                enabled = selected.isNotEmpty(),
+            ) {
+                Text("Patch", color = Accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = Gray60) }
+        },
+    )
 }
 
 @Composable
