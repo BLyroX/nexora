@@ -54,12 +54,6 @@ jobs:
           echo "has_build_marker=$HAS_MARKER" >> "$GITHUB_OUTPUT"
           echo "APK build: $NEEDS_APK | Bundle build: $NEEDS_BUNDLE"
 
-      - name: Checkout addons from amxx-addons branch
-        shell: bash
-        run: |
-          git fetch origin amxx-addons
-          git checkout origin/amxx-addons -- addons/
-
       - name: Set up JDK
         if: steps.build_type.outputs.needs_apk == 'true'
         uses: actions/setup-java@v4
