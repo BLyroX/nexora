@@ -221,6 +221,14 @@ jobs:
             mv "$APK" "nexora_v${VERSION}.apk"
             echo "Renamed: nexora_v${VERSION}.apk"
           fi
+          
+      - name: Upload Nexora APK artifact
+        if: env.NEEDS_APK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexora-apk
+          path: nexora_v*.apk
+          if-no-files-found: error
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
