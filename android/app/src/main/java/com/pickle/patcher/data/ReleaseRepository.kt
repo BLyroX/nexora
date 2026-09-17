@@ -1,7 +1,5 @@
 package com.pickle.patcher.data
 
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -10,54 +8,26 @@ import java.util.concurrent.TimeUnit
 import kotlin.io.DEFAULT_BUFFER_SIZE
 
 /**
- * Minimal GitHub Releases client. Fetches the latest release metadata and downloads
- * the AMXX mod bundle artifact so the patcher can inject freshly CI-built payloads
- * without shipping a compiler.
+ * Minimal GitHub Releases client. Now API-quota-free: it resolves the latest
+ * tag through the github.com redirect and downloads release assets straight
+ * from the releases/download CDN path. No api.github.com calls remain, so the
+ * per-IP 60 req/hour rate limit is never hit by the app's polling loop.
  */
 object ReleaseRepository {
+
+    /**
+     * Raised on GitHub HTTP 403 (per-IP API quota or CDN download throttling).
+     * Carries the server's Retry-After hint so callers can back off politely.
+     */
+    class GitHubRateLimited(
+        val retryAfterSeconds: Long?,
+        message: String,
+    ) : IOException(message)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
-
-    private val json = Json { ignoreUnknownKeys = true }
-
-    @Serializable
-    data class Release(
-        val tag_name: String = "",
-        val name: String = "",
-        val body: String = "",
-        val published_at: String = "",
-        val target_commitish: String = "",
-        val assets: List<Asset> = emptyList(),
-    ) {
-        @Serializable
-        data class Asset(
-            val name: String = "",
-            val browser_download_url: String = "",
-            val size: Long = 0,
-        )
-
-        /**
-         * Bundle for the given ABI. arm64-v8a keeps the legacy asset name
-         * (amxx-bundle.zip, produced by every release) with
-         * amxx-bundle-arm64-v8a.zip as the modern fallback; other ABIs use
-         * amxx-bundle-<abi>.zip and are only present when CI built them.
-         */
-        fun bundleAsset(abi: String = "arm64-v8a"): Asset? {
-            val names = if (abi == "arm64-v8a") {
-                listOf("amxx-bundle.zip", "amxx-bundle-arm64-v8a.zip")
-            } else {
-                listOf("amxx-bundle-$abi.zip")
-            }
-            return assets.firstOrNull { it.name in names && it.name.endsWith(".zip") }
-        }
-
-        fun addonsAsset(): Asset? = assets.firstOrNull {
-            it.name.startsWith("amxx-addons") && it.name.endsWith(".zip")
-        }
-    }
 
     private val webClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -88,81 +58,47 @@ object ReleaseRepository {
         }
     }
 
-    @Serializable
-    data class CompareResult(
-        val commits: List<Commit> = emptyList(),
-    ) {
-        @Serializable
-        data class Commit(
-            val sha: String = "",
-            val commit: CommitData = CommitData(),
-        ) {
-            @Serializable
-            data class CommitData(
-                val message: String = "",
-            )
-        }
-    }
-
-    suspend fun latest(repo: String): Release {
-        val req = Request.Builder()
-            .url("https://api.github.com/repos/$repo/releases/latest")
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "cs16-amxx-patcher")
-            .build()
-        return client.newCall(req).execute().use { resp ->
-            if (resp.code != 200) throw IOException("GitHub ${resp.code}: ${resp.message}")
-            json.decodeFromString<Release>(resp.body?.string().orEmpty())
-        }
-    }
+    /**
+     * Builds a direct release-asset download URL. Unlike
+     * `api.github.com/.../browser_download_url`, this never touches the API
+     * quota, so it is safe to construct on every poll.
+     */
+    fun assetUrl(repo: String, tag: String, name: String): String =
+        "https://github.com/$repo/releases/download/$tag/$name"
 
     /**
-     * Fetches up to [perPage] most-recent releases and returns the newest one
-     * that ships an `.apk` (a real APK update). The GitHub `releases/latest`
-     * endpoint only points at the overall newest release, which may be a
-     * bundle-only build with no APK asset — that bug made the app report
-     * "up to date" while an older, APK-bearing release was still pending.
+     * HEAD-probes a release asset. Returns its Content-Length (0 = no length)
+     * or null when the asset does not exist / the request failed. Zero API cost.
      */
-    suspend fun latestApkRelease(repo: String, perPage: Int = 15): Release? {
-        val req = Request.Builder()
-            .url("https://api.github.com/repos/$repo/releases?per_page=$perPage")
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "cs16-amxx-patcher")
-            .build()
-        return client.newCall(req).execute().use { resp ->
-            if (resp.code != 200) throw IOException("GitHub ${resp.code}: ${resp.message}")
-            val releases = json.decodeFromString<List<Release>>(resp.body?.string().orEmpty())
-            releases.firstOrNull { rel -> rel.assets.any { it.name.endsWith(".apk", ignoreCase = true) } }
-        }
-    }
-
-    /**
-     * Fetches commits between two tags using the GitHub compare API.
-     * Returns commit messages (first line of each) in reverse chronological order.
-     */
-    suspend fun compareCommits(repo: String, base: String, head: String): List<String> {
+    suspend fun probeSize(url: String): Long? {
         return try {
             val req = Request.Builder()
-                .url("https://api.github.com/repos/$repo/compare/$base...$head")
-                .header("Accept", "application/vnd.github+json")
+                .url(url)
                 .header("User-Agent", "cs16-amxx-patcher")
+                .head()
                 .build()
-            client.newCall(req).execute().use { resp ->
-                if (resp.code != 200) return emptyList()
-                val result = json.decodeFromString<CompareResult>(resp.body?.string().orEmpty())
-                result.commits.map { it.commit.message.lineSequence().first().trim() }
+            webClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) null
+                else resp.body?.contentLength()?.coerceAtLeast(0L) ?: 0L
             }
         } catch (_: Throwable) {
-            emptyList()
+            null
         }
     }
 
-    suspend fun download(
-        asset: Release.Asset,
-        dest: File,
-        onProgress: (Float) -> Unit = {},
-    ): File = downloadUrl(asset.browser_download_url, dest, asset.size) { done, total ->
-        if (total > 0) onProgress((done.toDouble() / total).toFloat().coerceIn(0f, 1f))
+    /** Seconds from a Retry-After header (integer or HTTP-date). */
+    private fun retryAfterSeconds(raw: String?): Long? {
+        if (raw.isNullOrBlank()) return null
+        raw.trim().toLongOrNull()?.let { return it }
+        return try {
+            val fmt = java.text.SimpleDateFormat(
+                "EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US
+            )
+            val whenTo = fmt.parse(raw.trim()) ?: return null
+            ((whenTo.time - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     suspend fun downloadUrl(
@@ -177,7 +113,18 @@ object ReleaseRepository {
             .header("Accept", "application/octet-stream")
             .build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("Download ${resp.code}")
+            if (resp.code == 403) {
+                val wait = retryAfterSeconds(resp.header("Retry-After"))
+                val hint = wait?.let {
+                    " (>1 min)" + if (it >= 60) " — retry in ${it / 60} min" else ""
+                } ?: ""
+                throw GitHubRateLimited(
+                    wait,
+                    "GitHub is rate-limiting this network right now (HTTP 403$hint). " +
+                        "Wait a bit and try again.",
+                )
+            }
+            if (!resp.isSuccessful) throw IOException("Download ${resp.code}: ${resp.message}")
             dest.parentFile?.mkdirs()
             val body = resp.body
                 ?: throw IOException("Empty response body")

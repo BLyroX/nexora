@@ -285,49 +285,46 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun scanLibs(autoLoad: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
+            val targetDir = File(libsDir, _abi.value)
+            val localFiles = if (targetDir.isDirectory) {
+                targetDir.listFiles()
+                    ?.filter { it.name.endsWith(".so") && !it.name.startsWith("libmenu_") }
+                    ?.associate { it.name to it.length() }
+                    ?: emptyMap()
+            } else emptyMap()
+
+            // API-free: newest tag via redirect + per-ABI manifest asset list.
+            var tagName = "live"
+            var releaseMap: Map<String, Long> = emptyMap()
             try {
-                val targetDir = File(libsDir, _abi.value)
-                val localFiles = if (targetDir.isDirectory) {
-                    targetDir.listFiles()
-                        ?.filter { it.name.endsWith(".so") && !it.name.startsWith("libmenu_") }
-                        ?.associate { it.name to it.length() }
-                        ?: emptyMap()
-                } else emptyMap()
+                tagName = ReleaseRepository.latestTagRedirect(repo) ?: tagName
+                val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
+                releaseMap = assets.associate { it.cleanName to it.size }
+            } catch (_: Throwable) { }
 
-                var tagName = "live"
-                var releaseMap: Map<String, Long> = emptyMap()
-                try {
-                    val rel = ReleaseRepository.latest(repo)
-                    tagName = rel.name.ifBlank { rel.tag_name }
-                    val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
-                    releaseMap = assets.associate { it.cleanName to it.size }
-                } catch (_: Throwable) { }
-
-                val allNames = (localFiles.keys + releaseMap.keys).distinct().sorted()
-                _libs.value = allNames.map { name ->
-                    val local = localFiles[name] ?: 0L
-                    val release = releaseMap[name] ?: 0L
-                    LibInfo(
-                        name = name,
-                        localSize = local,
-                        releaseSize = release,
-                        upToDate = release > 0 && local == release,
-                    )
+            val allNames = (localFiles.keys + releaseMap.keys).distinct().sorted()
+            _libs.value = allNames.map { name ->
+                val local = localFiles[name] ?: 0L
+                val release = releaseMap[name] ?: 0L
+                LibInfo(
+                    name = name,
+                    localSize = local,
+                    releaseSize = release,
+                    upToDate = release > 0 && local == release,
+                )
+            }
+            val outdated = _libs.value.filter { !it.upToDate && it.releaseSize > 0 }
+            if (autoLoad && outdated.isEmpty() && releaseMap.isNotEmpty()) {
+                // Everything on disk is up to date — auto-load the bundle so the
+                // user can patch straight away. (Guard on a fresh release list,
+                // otherwise a failed check could auto-load stale libs.)
+                val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
+                if (files.isNotEmpty()) {
+                    val b = buildBundleFromFiles(files, _abi.value)
+                    markBundleTagKnown(tagName)
+                    loadedBundle = b
+                    _bundle.value = BundleState.Loaded
                 }
-                val outdated = _libs.value.filter { !it.upToDate && it.releaseSize > 0 }
-                if (autoLoad && outdated.isEmpty()) {
-                    // Everything on disk is up to date — auto-load the bundle so the
-                    // user can patch straight away.
-                    val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
-                    if (files.isNotEmpty()) {
-                        val b = buildBundleFromFiles(files, _abi.value)
-                        markBundleTagKnown(tagName)
-                        loadedBundle = b
-                        _bundle.value = BundleState.Loaded
-                    }
-                }
-            } catch (_: Throwable) {
-                _libs.value = emptyList()
             }
         }
     }
@@ -338,8 +335,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 if (it.name == libName) it.copy(downloading = true, downloadProgress = 0f) else it
             }
             try {
-                val rel = ReleaseRepository.latest(repo)
-                val tagName = rel.name.ifBlank { rel.tag_name }
+                val tagName = ReleaseRepository.latestTagRedirect(repo) ?: return@launch
                 val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
                 val asset = assets.find { it.cleanName == libName } ?: return@launch
                 IncrementalUpdateManager.downloadSingle(asset, libsDir, _abi.value) { p ->
@@ -365,8 +361,8 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             _bundle.value = BundleState.Downloading(0.04f)
             try {
-                val rel = ReleaseRepository.latest(repo)
-                val tagName = rel.name.ifBlank { rel.tag_name }
+                val tagName = ReleaseRepository.latestTagRedirect(repo)
+                    ?: throw IOException("Could not reach GitHub releases")
                 _releaseNote.value = tagName
 
                 val assets = IncrementalUpdateManager.fetchReleaseAssets(tagName, _abi.value)
@@ -379,7 +375,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                     val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
                     if (files.isEmpty()) throw IOException("No .so files found in libs/")
                     val b = buildBundleFromFiles(files, _abi.value)
-                    markBundleTagKnown(rel.tag_name)
+                    markBundleTagKnown(tagName)
                     _bundle.value = BundleState.Loaded
                     loadedBundle = b
                     scanLibs()
@@ -420,7 +416,7 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
                 val files = IncrementalUpdateManager.loadBundleFiles(libsDir, _abi.value)
                 if (files.isEmpty()) throw IOException("No .so files found after download")
                 val b = buildBundleFromFiles(files, _abi.value)
-                markBundleTagKnown(rel.tag_name)
+                markBundleTagKnown(tagName)
                 _bundle.value = BundleState.Ready(
                     "Updated ${diff.toDownload.size} files", b.manifest.entries.size, b.manifest.version
                 )
@@ -549,13 +545,18 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             _addons.value = AddonsState.Downloading(0f, "Resolving latest release…")
             try {
-                val rel = ReleaseRepository.latest(repo)
-                val asset = rel.addonsAsset()
-                    ?: throw IOException("No addons asset in the latest release")
+                val tag = ReleaseRepository.latestTagRedirect(repo)
+                    ?: throw IOException("Could not reach GitHub releases")
                 val zip = File(bundleProvider.cacheDir(), "amxx-addons.zip")
                 _addons.value = AddonsState.Downloading(0f, "Downloading addons…")
-                ReleaseRepository.download(asset, zip) { p ->
-                    _addons.value = AddonsState.Downloading(p, "Downloading addons…")
+                ReleaseRepository.downloadUrl(
+                    ReleaseRepository.assetUrl(repo, tag, "amxx-addons.zip"),
+                    zip,
+                ) { done, total ->
+                    _addons.value = AddonsState.Downloading(
+                        if (total > 0) (done.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f,
+                        "Downloading addons…"
+                    )
                 }
                 _addons.value = AddonsState.Downloading(1f, "Extracting into cstrike…")
                 val target = File(_installPath.value)
@@ -754,59 +755,41 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             if (!silent) _appUpdate.value = AppUpdate.Checking
             try {
-                // The GitHub /releases/latest endpoint only points at the SINGLE
-                // newest release, which is frequently a `[bundle build]` with no
-                // APK asset. That made the app report "up to date" while an
-                // older APK-bearing release was still pending. Scan the last 15
-                // releases and pick the newest one that actually ships an APK.
-                val rel = ReleaseRepository.latestApkRelease(APP_RELEASE_REPO)
-                if (rel == null) {
-                    nextPollAt = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
-                    if (!silent) _appUpdate.value = AppUpdate.Failed("Update check failed (network).")
-                    else _appUpdate.value = AppUpdate.Idle
-                    return@launch
-                }
-                val tag = rel.tag_name
+                // API-free: resolve the newest tag via the github.com redirect
+                // (…/releases/latest) and probe the APK asset with a HEAD
+                // request. No api.github.com calls, so polling never spends the
+                // 60 req/hour/IP API quota that caused HTTP 403 for users.
+                val tag = ReleaseRepository.latestTagRedirect(APP_RELEASE_REPO)
+                    ?: throw IOException("Could not reach GitHub releases")
+                val apkUrl = ReleaseRepository.assetUrl(
+                    APP_RELEASE_REPO, tag, "nexora_v${tag.removePrefix("v")}.apk"
+                )
+                val apkSize = ReleaseRepository.probeSize(apkUrl)
+
                 val ours = try {
                     getApplication<Application>().packageManager
                         .getPackageInfo(getApplication<Application>().packageName, 0).versionName
                 } catch (_: Throwable) {
                     null
                 }
+                val differentFromInstalled = ours == null || !ours.startsWith("v") || tag != ours
+                val shouldNotify = if (silent) {
+                    // Back off so an unchanged tag does not hammer github.com:
+                    // at most one redirect + HEAD probe every 5 minutes.
+                    nextPollAt = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
+                    differentFromInstalled &&
+                        tag != updatePrefs.getString("known_tag", null)
+                } else {
+                    differentFromInstalled
+                }
 
-                val known = updatePrefs.getString("known_tag", null)
-                val isNew = (tag != known || !silent) &&
-                    (ours == null || !ours.startsWith("v") || tag != ours)
-                if (!isNew) {
+                if (apkSize != null && shouldNotify) {
+                    checkBundleUpdate(tag)
+                    _appUpdate.value = AppUpdate.Available(tag, "", emptyList(), apkSize, apkUrl)
+                } else {
+                    if (differentFromInstalled) checkBundleUpdate(tag)
+                    updatePrefs.edit().putString("known_tag", tag).apply()
                     _appUpdate.value = if (silent) AppUpdate.Idle else AppUpdate.UpToDate(tag)
-                    return@launch
-                }
-
-                val notes = rel.body.orEmpty()
-                val apk = rel.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-                val url = apk?.browser_download_url
-                    ?: "https://github.com/$APP_RELEASE_REPO/releases/download/$tag/nexora_v${tag.removePrefix("v")}.apk"
-                val size = apk?.size ?: 0L
-                val hasApkAsset = apk != null
-                var commits = emptyList<String>()
-                if (ours != null && ours.startsWith("v") && ours != tag) {
-                    commits = ReleaseRepository.compareCommits(APP_RELEASE_REPO, ours, tag)
-                }
-
-                val buildType = parseBuildType(notes, hasApkAsset)
-
-                when (buildType) {
-                    BuildType.BUNDLE -> {
-                        updatePrefs.edit().putString("known_tag", tag).apply()
-                        checkBundleUpdate(tag)
-                        _appUpdate.value = if (silent) AppUpdate.Idle else AppUpdate.UpToDate(tag)
-                    }
-                    BuildType.ANDROID, BuildType.VERSION -> {
-                        _appUpdate.value = AppUpdate.Available(tag, notes, commits, size, url)
-                        if (buildType == BuildType.VERSION) {
-                            checkBundleUpdate(tag)
-                        }
-                    }
                 }
             } catch (t: Throwable) {
                 nextPollAt = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
@@ -1301,33 +1284,6 @@ class PatcherViewModel(app: Application) : AndroidViewModel(app) {
         const val APP_RELEASE_REPO = "berkchy/nexora"
         const val NOTIFICATION_CHANNEL_ID = "bundle_updates"
         const val NOTIFICATION_ID = 1001
-
-        /**
-         * Detect build type from release body (auto-generated release notes).
-         * Commit message tags placed by the developer:
-         *   [android build]  → APK-only update (skip bundle notification)
-         *   [bundle build]   → Bundle-only update (skip APK dialog, show notification)
-         *   [version build]  → Both APK + bundle (show APK dialog AND bundle notification)
-         *
-         * Falls back to checking APK asset presence: if no .apk asset exists in
-         * the release, it is a bundle-only update even without the tag.
-         */
-        fun parseBuildType(body: String, hasApkAsset: Boolean = true): BuildType {
-            val lower = body.lowercase()
-            val hasAndroid = "[android build]" in lower
-            val hasBundle = "[bundle build]" in lower
-            val hasVersion = "[version build]" in lower
-            return when {
-                hasVersion -> BuildType.VERSION
-                hasAndroid && !hasBundle -> BuildType.ANDROID
-                hasBundle && !hasAndroid -> BuildType.BUNDLE
-                hasAndroid && hasBundle -> BuildType.VERSION
-                !hasApkAsset -> BuildType.BUNDLE
-                else -> BuildType.ANDROID
-            }
-        }
-
-        enum class BuildType { ANDROID, BUNDLE, VERSION }
     }
 
     /**

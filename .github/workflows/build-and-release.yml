@@ -37,16 +37,21 @@ jobs:
           echo "Commit message: $MSG"
           LOWER=$(echo "$MSG" | tr '[:upper:]' '[:lower:]')
           NEEDS_APK=false
-          NEEDS_BUNDLE=false
+          NEEDS_BUNDLE=true
           if echo "$LOWER" | grep -q '\[android build\]' || echo "$LOWER" | grep -q '\[version build\]'; then
             NEEDS_APK=true
           fi
-          NEEDS_BUNDLE=true
+          if echo "$LOWER" | grep -qE '\[bundle build\]|\[android build\]|\[version build\]'; then
+            HAS_MARKER="true"
+          else
+            HAS_MARKER="false"
+          fi
           # Escape multiline for GitHub Actions output
           ESCAPED=$(echo "$MSG" | head -1 | sed 's/"/\\"/g')
           echo "commit_msg=$ESCAPED" >> "$GITHUB_OUTPUT"
           echo "needs_apk=$NEEDS_APK" >> "$GITHUB_OUTPUT"
           echo "needs_bundle=$NEEDS_BUNDLE" >> "$GITHUB_OUTPUT"
+          echo "has_build_marker=$HAS_MARKER" >> "$GITHUB_OUTPUT"
           echo "APK build: $NEEDS_APK | Bundle build: $NEEDS_BUNDLE"
 
       - name: Checkout addons from amxx-addons branch
@@ -230,6 +235,8 @@ jobs:
           body: ${{ steps.build_type.outputs.commit_msg }}
           files: |
             amxx-addons.zip
+            manifest.json
+            manifest-v7a.json
             incremental/arm64-v8a/*.so
             incremental-v7a/armeabi-v7a/*.so
             ${{ steps.build_type.outputs.needs_apk == 'true' && 'android/app/build/outputs/apk/release/*.apk' || '' }}
@@ -249,6 +256,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_MSG=$(echo '${{ steps.build_type.outputs.commit_msg }}' | head -c 500)
+          HAS_MARKER='${{ steps.build_type.outputs.has_build_marker }}'
           RELEASE_URL="https://github.com/${REPO}/releases/tag/${GITHUB_REF_NAME}"
           if compgen -G "android/app/build/outputs/apk/release/*.apk" >/dev/null; then
             APK_COUNT=$(ls android/app/build/outputs/apk/release/*.apk | wc -l)
@@ -261,10 +269,17 @@ jobs:
             TYPE_FIELD="App + libs"
             APK_URL="https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/nexora_v${VERSION}.apk"
             APK_FIELD=", { \"name\": \"Download\", \"value\": \"[nexora_v${VERSION}.apk](${APK_URL})\", \"inline\": true }"
-          else
+          elif [ "$HAS_MARKER" = "true" ]; then
             TITLE="Nexora v${VERSION} libs & plugins update"
             STATUS_FIELD=":white_check_mark: Libs & plugins updated"
-            TYPE_FIELD="Bundle only (no APK)"
+            TYPE_FIELD="Bundle (libs & plugins)"
+            APK_FIELD=""
+          else
+            # Marker-less commit (docs/config/infra): no app or lib changes,
+            # announce the tag as a plain update notice.
+            TITLE="Nexora v${VERSION} update info"
+            STATUS_FIELD=":information_source: Update posted"
+            TYPE_FIELD="Update info"
             APK_FIELD=""
           fi
           BODY=$(cat <<EOF

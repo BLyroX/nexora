@@ -34,6 +34,20 @@ object IncrementalUpdateManager {
         val assets: List<ReleaseAsset> = emptyList(),
     )
 
+    @Serializable
+    data class ManifestInfo(
+        val version: String = "",
+        val abi: String = "",
+        val files: List<ManifestFile> = emptyList(),
+    ) {
+        @Serializable
+        data class ManifestFile(
+            val name: String = "",
+            val asset: String = "",
+            val size: Long = 0,
+        )
+    }
+
     data class AssetInfo(
         val assetName: String,
         val cleanName: String,
@@ -50,10 +64,45 @@ object IncrementalUpdateManager {
     private const val REPO = "berkchy/nexora"
 
     /**
-     * Fetch release assets from GitHub API and filter for current ABI.
-     * Returns AssetInfo with clean names (stripped ABI prefix).
+     * Fetch release assets for the current ABI and return AssetInfo with clean
+     * names (stripped ABI prefix). Primary source is the small per-ABI
+     * manifest.json that CI uploads with every release — a direct
+     * releases/download URL that costs zero API quota. Falls back to the
+     * GitHub API only if the manifest cannot be fetched.
      */
     suspend fun fetchReleaseAssets(tag: String, abi: String): List<AssetInfo> {
+        val manifestName = if (abi == "arm64-v8a") "manifest.json" else "manifest-v7a.json"
+        val manifest = try {
+            fetchManifestAssets(tag, manifestName)
+        } catch (_: Throwable) {
+            null
+        }
+        if (manifest != null) return manifest
+        return fetchReleaseAssetsApi(tag, abi)
+    }
+
+    private suspend fun fetchManifestAssets(tag: String, manifestName: String): List<AssetInfo>? {
+        val url = ReleaseRepository.assetUrl(REPO, tag, manifestName)
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", "cs16-amxx-patcher")
+            .header("Accept", "application/json")
+            .build()
+        return client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val manifest = json.decodeFromString<ManifestInfo>(resp.body?.string().orEmpty())
+            manifest.files.map { f ->
+                AssetInfo(
+                    assetName = f.asset,
+                    cleanName = f.name,
+                    size = f.size,
+                    downloadUrl = ReleaseRepository.assetUrl(REPO, tag, f.asset),
+                )
+            }
+        }
+    }
+
+    private suspend fun fetchReleaseAssetsApi(tag: String, abi: String): List<AssetInfo> {
         val url = "https://api.github.com/repos/$REPO/releases/tags/$tag"
         return try {
             val req = Request.Builder()
@@ -133,7 +182,14 @@ object IncrementalUpdateManager {
 
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    throw IllegalStateException("Download failed for ${asset.assetName}: ${resp.code}")
+                    val hint = if (resp.code == 403) {
+                        val wait = resp.header("Retry-After")
+                            ?.trim()?.toLongOrNull()
+                        if (wait != null && wait >= 60) " — wait ${wait / 60} min" else ""
+                    } else ""
+                    throw IllegalStateException(
+                        "Download failed for ${asset.assetName}: ${resp.code}$hint"
+                    )
                 }
                 val body = resp.body ?: throw IllegalStateException("Empty body for ${asset.assetName}")
                 val expectedSize = asset.size.takeIf { it > 0 }
@@ -184,7 +240,14 @@ object IncrementalUpdateManager {
 
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) {
-                throw IllegalStateException("Download failed for ${asset.assetName}: ${resp.code}")
+                val hint = if (resp.code == 403) {
+                    val wait = resp.header("Retry-After")
+                        ?.trim()?.toLongOrNull()
+                    if (wait != null && wait >= 60) " — wait ${wait / 60} min" else ""
+                } else ""
+                throw IllegalStateException(
+                    "Download failed for ${asset.assetName}: ${resp.code}$hint"
+                )
             }
             val body = resp.body ?: throw IllegalStateException("Empty body for ${asset.assetName}")
             val expectedSize = asset.size.takeIf { it > 0 }
