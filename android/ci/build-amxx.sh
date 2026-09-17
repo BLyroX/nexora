@@ -64,8 +64,13 @@ vendored_from() {
   local src=$1 dst=$2
   if [ ! -d "$dst/.git" ]; then
     echo "== vendoring $src -> $dst =="
+    rm -rf "$dst"
     mkdir -p "$dst"
     cp -R "$src/." "$dst/"
+    # A submodule checkout contains a .git pointer file (gitdir: ...); strip it
+    # so git init starts a fresh repo here (a stale pointer would make git
+    # reuse the submodule's HEAD and aborts the "sourced" commit as no-op).
+    rm -rf "$dst/.git"
     (cd "$dst" && git init -q && git add -A && git -c user.name=ci -c user.email=ci@ci commit -q -m sourced)
   fi
 }
