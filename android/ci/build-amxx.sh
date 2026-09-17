@@ -4,12 +4,12 @@
 # Android NDK. Supported target ABIs: arm64-v8a (default, fully supported) and
 # armeabi-v7a (best-effort/experimental trial — see known gaps below). Sources:
 #   - alliedmodders/amxmodx@master   (rolling 1.10, fetched from upstream)
-#   - android/mm-p                    (vendored Bots-United/metamod-p)
-#   - android/hlsdk                   (vendored HLSDK)
+#   - 3rdparty/mm-p                  (submodule, Bots-United/metamod-p)
+#   - 3rdparty/hlsdk                 (submodule, vendored HLSDK)
 #
 # All build customizations live as patch files under <repo>/patches/ and are
-# applied here. hlsdk + metamod-p are vendored into the repository (git
-# submodules cannot be used since the linked repos are not under this account).
+# applied here. hlsdk + metamod-p are vendored repos checked out as git
+# submodules under <repo>/3rdparty/ (berkchy/hlsdk, berkchy/mm-p).
 #
 # Produces (with ABI's shard dir this run builds into):
 #   $OUT/lib/$ABI/libamxmodx.so
@@ -71,7 +71,7 @@ vendored_from() {
 }
 # metamod-p stays only as the header source used to compile the AMXX core
 # (its meta_api.h ABI suffices); the actual runtime gamemod is metamod-fwgs.
-vendored_from "$REPO_ROOT/android/mm-p" "$SRC/metamod-p"
+vendored_from "$REPO_ROOT/3rdparty/mm-p" "$SRC/metamod-p"
 # Runtime metamod: FWGS/metamod-fwgs (CMake), Xash3D-explicit, produces
 # libmetamod_android_arm64.so.
 fetch metamod-fwgs "https://github.com/FWGS/metamod-fwgs.git" yes
@@ -311,7 +311,7 @@ HOSTCXX=${HOSTCXX:-g++}
 SYSROOT_LIB=$NDK/toolchains/llvm/prebuilt/$HOST-x86_64/sysroot/usr/lib/$SYSROOT_ARCH
 
 AMXX=$SRC/amxmodx
-HLSDK=$REPO_ROOT/android/hlsdk
+HLSDK=$REPO_ROOT/3rdparty/hlsdk
 METAMOD=$SRC/metamod-p/metamod
 MMHLSDK=$SRC/metamod-p/hlsdk
 

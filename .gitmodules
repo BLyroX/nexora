@@ -2,3 +2,11 @@
 	path = vcs16
 	url = https://github.com/berkchy/vcs16.git
 	branch = main
+[submodule "3rdparty/hlsdk"]
+	path = 3rdparty/hlsdk
+	url = https://github.com/berkchy/hlsdk.git
+	branch = main
+[submodule "3rdparty/mm-p"]
+	path = 3rdparty/mm-p
+	url = https://github.com/berkchy/mm-p.git
+	branch = main
