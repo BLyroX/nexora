@@ -16,7 +16,6 @@
 #   $OUT/lib/$ABI/libmetamod.so
 #   $OUT/lib/$ABI/lib<name>_amxx_$MOD_SUFFIX.so               (modules; _amd64 on LP64 ABIs, _arm on ARM32)
 #   $OUT/compiler/$ABI/amxxpc[.so]                          (on-device compiler)
-#   $OUT/plugins/*.amxx                                     (64-bit cells, from plugins-src)
 #
 #   usage: ci/build-amxx.sh <src-root> <ndk-root> <out-dir> [plugins-src] [abi]
 #

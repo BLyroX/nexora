@@ -88,7 +88,7 @@ jobs:
           # failure only drops the v7a bundle, it never fails the workflow.
           for ABI in arm64-v8a armeabi-v7a; do
             if RELEASE_VERSION="$BUNDLE_VERSION" bash ./android/ci/build-amxx.sh "$GITHUB_WORKSPACE/src" "$ANDROID_NDK_HOME" \
-                "$GITHUB_WORKSPACE/build-out" "$GITHUB_WORKSPACE/android/plugins-src" "$ABI"; then
+                "$GITHUB_WORKSPACE/build-out" "" "$ABI"; then
               echo "::group::OK $ABI"
               ls -l "$GITHUB_WORKSPACE/build-out/lib/$ABI" 2>/dev/null
               echo "::endgroup::"
