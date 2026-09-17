@@ -1,8 +1,8 @@
 diff --git a/modules/fakemeta/pdata.cpp b/modules/fakemeta/pdata.cpp
-index 870be62..178fff6 100644
+index 870be62..9ecf2e4 100644
 --- a/modules/fakemeta/pdata.cpp
 +++ b/modules/fakemeta/pdata.cpp
-@@ -40,6 +40,218 @@ bool IsBadWritePtr(void *l, size_t size)
+@@ -40,6 +40,222 @@ bool IsBadWritePtr(void *l, size_t size)
  }
  #endif
  
@@ -48,6 +48,8 @@ index 870be62..178fff6 100644
 +	{ 78, 93 }, // cbaseplayerweapon.m_iWeaponState
 +	{ 79, 94 }, // cbaseplayerweapon.m_flNextReload
 +	{ 80, 95 }, // cbaseplayerweapon.m_flDecreaseShotsFired
++	{ 88, 106 }, // cbasemonster.m_flNextAttack
++	{ 89, 108 }, // cbasemonster.m_hEnemy
 +	{ 105, 131 }, // cgrenade.m_flC4Blow
 +	{ 117, 142 }, // cbaseplayer.m_iKevlar
 +	{ 119, 144 }, // cbaseplayer.m_iTeam
@@ -114,6 +116,8 @@ index 870be62..178fff6 100644
 +	{ 320, 380 }, // cbaseplayerweapon.m_flDecreaseShotsFired
 +	{ 324, 384 }, // cbaseplayerweapon.m_usFireGlock18
 +	{ 326, 386 }, // cbaseplayerweapon.m_usFireFamas
++	{ 352, 424 }, // cbasemonster.m_flNextAttack
++	{ 356, 432 }, // cbasemonster.m_hEnemy
 +	{ 364, 448 }, // cbasemonster.m_hTargetEnt
 +	{ 404, 496 }, // cgrenade.m_bStartDefuse
 +	{ 420, 524 }, // cgrenade.m_flC4Blow
@@ -221,7 +225,7 @@ index 870be62..178fff6 100644
  static cell AMX_NATIVE_CALL set_pdata_int(AMX *amx, cell *params)
  {
  	int index=params[1];
-@@ -50,6 +262,10 @@ static cell AMX_NATIVE_CALL set_pdata_int(AMX *amx, cell *params)
+@@ -50,6 +266,10 @@ static cell AMX_NATIVE_CALL set_pdata_int(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[4];
@@ -232,7 +236,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -72,6 +288,10 @@ static cell AMX_NATIVE_CALL get_pdata_int(AMX *amx, cell *params)
+@@ -72,6 +292,10 @@ static cell AMX_NATIVE_CALL get_pdata_int(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[3];
@@ -243,7 +247,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -94,6 +314,10 @@ static cell AMX_NATIVE_CALL set_pdata_float(AMX *amx, cell *params)
+@@ -94,6 +318,10 @@ static cell AMX_NATIVE_CALL set_pdata_float(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[4];
@@ -254,7 +258,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -116,6 +340,10 @@ static cell AMX_NATIVE_CALL get_pdata_float(AMX *amx, cell *params)
+@@ -116,6 +344,10 @@ static cell AMX_NATIVE_CALL get_pdata_float(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[3];
@@ -265,7 +269,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -137,6 +365,10 @@ static cell AMX_NATIVE_CALL get_pdata_string(AMX *amx, cell *params)
+@@ -137,6 +369,10 @@ static cell AMX_NATIVE_CALL get_pdata_string(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[6];
@@ -276,7 +280,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 6 || params[7] == CELL_MIN)
-@@ -174,6 +406,10 @@ static cell AMX_NATIVE_CALL set_pdata_string(AMX *amx, cell *params)
+@@ -174,6 +410,10 @@ static cell AMX_NATIVE_CALL set_pdata_string(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[5];
@@ -287,7 +291,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 5 || params[6] == CELL_MIN)
-@@ -227,6 +463,10 @@ static cell AMX_NATIVE_CALL get_pdata_ent(AMX *amx, cell *params)
+@@ -227,6 +467,10 @@ static cell AMX_NATIVE_CALL get_pdata_ent(AMX *amx, cell *params)
  
  #if defined( __linux__ )
  	iOffset += params[3];
@@ -298,7 +302,7 @@ index 870be62..178fff6 100644
  #elif defined( __APPLE__ )
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -271,6 +511,10 @@ static cell AMX_NATIVE_CALL set_pdata_ent(AMX *amx, cell *params)
+@@ -271,6 +515,10 @@ static cell AMX_NATIVE_CALL set_pdata_ent(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -309,7 +313,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -294,6 +538,10 @@ static cell AMX_NATIVE_CALL get_pdata_bool(AMX *amx, cell *params)
+@@ -294,6 +542,10 @@ static cell AMX_NATIVE_CALL get_pdata_bool(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[3];
@@ -320,7 +324,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -317,6 +565,10 @@ static cell AMX_NATIVE_CALL set_pdata_bool(AMX *amx, cell *params)
+@@ -317,6 +569,10 @@ static cell AMX_NATIVE_CALL set_pdata_bool(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -331,7 +335,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -340,6 +592,10 @@ static cell AMX_NATIVE_CALL get_pdata_byte(AMX *amx, cell *params)
+@@ -340,6 +596,10 @@ static cell AMX_NATIVE_CALL get_pdata_byte(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[3];
@@ -342,7 +346,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -363,6 +619,10 @@ static cell AMX_NATIVE_CALL set_pdata_byte(AMX *amx, cell *params)
+@@ -363,6 +623,10 @@ static cell AMX_NATIVE_CALL set_pdata_byte(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -353,7 +357,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -386,6 +646,10 @@ static cell AMX_NATIVE_CALL get_pdata_short(AMX *amx, cell *params)
+@@ -386,6 +650,10 @@ static cell AMX_NATIVE_CALL get_pdata_short(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[3];
@@ -364,7 +368,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -409,6 +673,10 @@ static cell AMX_NATIVE_CALL set_pdata_short(AMX *amx, cell *params)
+@@ -409,6 +677,10 @@ static cell AMX_NATIVE_CALL set_pdata_short(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -375,7 +379,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -432,6 +700,10 @@ static cell AMX_NATIVE_CALL get_pdata_vector(AMX *amx, cell *params)
+@@ -432,6 +704,10 @@ static cell AMX_NATIVE_CALL get_pdata_vector(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -386,7 +390,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -461,6 +733,10 @@ static cell AMX_NATIVE_CALL set_pdata_vector(AMX *amx, cell *params)
+@@ -461,6 +737,10 @@ static cell AMX_NATIVE_CALL set_pdata_vector(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -397,7 +401,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
-@@ -488,6 +764,10 @@ static cell AMX_NATIVE_CALL get_pdata_ehandle(AMX *amx, cell *params)
+@@ -488,6 +768,10 @@ static cell AMX_NATIVE_CALL get_pdata_ehandle(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[3];
@@ -408,7 +412,7 @@ index 870be62..178fff6 100644
  #elif defined(__APPLE__)
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -539,6 +819,10 @@ static cell AMX_NATIVE_CALL set_pdata_ehandle(AMX *amx, cell *params)
+@@ -539,6 +823,10 @@ static cell AMX_NATIVE_CALL set_pdata_ehandle(AMX *amx, cell *params)
  
  #if defined(__linux__)
  	offset += params[4];
@@ -420,10 +424,10 @@ index 870be62..178fff6 100644
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 4)
 diff --git a/modules/hamsandwich/pdata.cpp b/modules/hamsandwich/pdata.cpp
-index f71b0bb..e45b43c 100644
+index f71b0bb..52af8e7 100644
 --- a/modules/hamsandwich/pdata.cpp
 +++ b/modules/hamsandwich/pdata.cpp
-@@ -45,6 +45,218 @@
+@@ -45,6 +45,222 @@
  	}
  
  // Return -1 on null, -2 on invalid, and the the index of any other.
@@ -469,6 +473,8 @@ index f71b0bb..e45b43c 100644
 +	{ 78, 93 }, // cbaseplayerweapon.m_iWeaponState
 +	{ 79, 94 }, // cbaseplayerweapon.m_flNextReload
 +	{ 80, 95 }, // cbaseplayerweapon.m_flDecreaseShotsFired
++	{ 88, 106 }, // cbasemonster.m_flNextAttack
++	{ 89, 108 }, // cbasemonster.m_hEnemy
 +	{ 105, 131 }, // cgrenade.m_flC4Blow
 +	{ 117, 142 }, // cbaseplayer.m_iKevlar
 +	{ 119, 144 }, // cbaseplayer.m_iTeam
@@ -535,6 +541,8 @@ index f71b0bb..e45b43c 100644
 +	{ 320, 380 }, // cbaseplayerweapon.m_flDecreaseShotsFired
 +	{ 324, 384 }, // cbaseplayerweapon.m_usFireGlock18
 +	{ 326, 386 }, // cbaseplayerweapon.m_usFireFamas
++	{ 352, 424 }, // cbasemonster.m_flNextAttack
++	{ 356, 432 }, // cbasemonster.m_hEnemy
 +	{ 364, 448 }, // cbasemonster.m_hTargetEnt
 +	{ 404, 496 }, // cgrenade.m_bStartDefuse
 +	{ 420, 524 }, // cgrenade.m_flC4Blow
@@ -642,7 +650,7 @@ index f71b0bb..e45b43c 100644
  static cell AMX_NATIVE_CALL get_pdata_cbase_safe(AMX *amx, cell *params)
  {
  	int index=params[1];
-@@ -52,6 +264,10 @@ static cell AMX_NATIVE_CALL get_pdata_cbase_safe(AMX *amx, cell *params)
+@@ -52,6 +268,10 @@ static cell AMX_NATIVE_CALL get_pdata_cbase_safe(AMX *amx, cell *params)
  	int iOffset=params[2];
  #ifdef __linux__
  	iOffset += params[3];
@@ -653,7 +661,7 @@ index f71b0bb..e45b43c 100644
  #elif defined __APPLE__
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -89,6 +305,10 @@ static cell AMX_NATIVE_CALL get_pdata_cbase(AMX *amx, cell *params)
+@@ -89,6 +309,10 @@ static cell AMX_NATIVE_CALL get_pdata_cbase(AMX *amx, cell *params)
  	int iOffset=params[2];
  #ifdef __linux__
  	iOffset += params[3];
@@ -664,7 +672,7 @@ index f71b0bb..e45b43c 100644
  #elif defined __APPLE__
  	// Use Linux offset in older plugins
  	if (params[0] / sizeof(cell) == 3)
-@@ -120,6 +340,10 @@ static cell AMX_NATIVE_CALL set_pdata_cbase(AMX *amx, cell *params)
+@@ -120,6 +344,10 @@ static cell AMX_NATIVE_CALL set_pdata_cbase(AMX *amx, cell *params)
  	int iOffset=params[2];
  #ifdef __linux__
  	iOffset += params[4];
